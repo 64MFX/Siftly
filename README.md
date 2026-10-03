@@ -61,7 +61,7 @@ cd Siftly
 ./start.sh
 ```
 
-`start.sh` installs dependencies, sets up the database, checks for Claude CLI auth, and opens [http://localhost:3000](http://localhost:3000) automatically.
+`start.sh` installs dependencies, sets up the database, checks for Claude CLI auth, and opens [http://localhost:28417](http://localhost:28417) automatically.
 
 ### Option B — Using Claude Code
 
@@ -82,10 +82,10 @@ cd Siftly
 npm install
 npx prisma generate
 npx prisma migrate dev --name init
-npx next dev
+npx next dev -p 28417
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
+Open [http://localhost:28417](http://localhost:28417)
 
 ---
 
@@ -375,7 +375,7 @@ For Prisma command and workflow details, see:
 npm install
 npx prisma generate
 npx prisma migrate dev --name init
-npx next dev
+npx next dev -p 28417
 
 # Type check
 npx tsc --noEmit
