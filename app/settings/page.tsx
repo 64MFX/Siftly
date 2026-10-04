@@ -25,7 +25,20 @@ import {
   BookOpen,
   Folder,
   FolderOpen,
+  RefreshCw,
+  Server,
 } from 'lucide-react'
+
+type AIProvider = 'anthropic' | 'openai' | 'minimax' | 'proxy'
+
+const PROVIDER_LABELS: Record<AIProvider, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  minimax: 'MiniMax',
+  proxy: 'Local Proxy',
+}
+
+const DEFAULT_PROXY_BASE_URL = 'http://127.0.0.1:8317/v1'
 
 const ANTHROPIC_MODELS = [
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fast & Cheap' },
@@ -112,15 +125,19 @@ function ApiKeyField({
   fieldKey,
   hint,
   docHref,
+  docLabel = 'Get key',
   onToast,
+  onChanged,
   testProvider,
 }: {
   label: string
   placeholder: string
-  fieldKey: 'anthropicApiKey' | 'openaiApiKey' | 'minimaxApiKey'
+  fieldKey: 'anthropicApiKey' | 'openaiApiKey' | 'minimaxApiKey' | 'proxyApiKey'
   hint: string
   docHref: string
+  docLabel?: string
   onToast: (t: Toast) => void
+  onChanged?: () => void
   testProvider?: string
 }) {
   const [key, setKey] = useState('')
@@ -136,7 +153,12 @@ function ApiKeyField({
     fetch('/api/settings')
       .then((r) => r.json())
       .then((d: Record<string, unknown>) => {
-        const hasKeyField = fieldKey === 'openaiApiKey' ? 'hasOpenaiKey' : fieldKey === 'minimaxApiKey' ? 'hasMinimaxKey' : 'hasAnthropicKey'
+        const hasKeyField = {
+          anthropicApiKey: 'hasAnthropicKey',
+          openaiApiKey: 'hasOpenaiKey',
+          minimaxApiKey: 'hasMinimaxKey',
+          proxyApiKey: 'hasProxyKey',
+        }[fieldKey]
         const hasKey = d[hasKeyField]
         const masked = d[fieldKey] as string | null
         if (hasKey && masked) setSavedMasked(masked)
@@ -163,6 +185,7 @@ function ApiKeyField({
       }
       setSavedMasked(key.trim().slice(0, 6) + '••••••••' + key.trim().slice(-4))
       setKey('')
+      onChanged?.()
       // Auto-test after save
       if (testProvider) void handleTest()
       else onToast({ type: 'success', message: `${label} saved successfully` })
@@ -190,6 +213,7 @@ function ApiKeyField({
       }
       setSavedMasked(null)
       setTestState('idle')
+      onChanged?.()
       onToast({ type: 'success', message: `${label} removed` })
     } catch (err) {
       onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to remove key' })
@@ -302,7 +326,7 @@ function ApiKeyField({
           rel="noopener noreferrer"
           className="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-400 transition-colors"
         >
-          Get key <ExternalLink size={11} />
+          {docLabel} <ExternalLink size={11} />
         </a>
       </div>
     </div>
@@ -525,7 +549,7 @@ function CodexCliStatusBox() {
   )
 }
 
-function ProviderToggle({ value, onChange }: { value: 'anthropic' | 'openai' | 'minimax'; onChange: (v: 'anthropic' | 'openai' | 'minimax') => void }) {
+function ProviderToggle({ value, onChange }: { value: AIProvider; onChange: (v: AIProvider) => void }) {
   return (
     <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-800 border border-zinc-700 mb-5">
       <button
@@ -558,26 +582,252 @@ function ProviderToggle({ value, onChange }: { value: 'anthropic' | 'openai' | '
       >
         MiniMax
       </button>
+      <button
+        onClick={() => onChange('proxy')}
+        className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+          value === 'proxy'
+            ? 'bg-sky-600 text-white shadow-sm'
+            : 'text-zinc-400 hover:text-zinc-200'
+        }`}
+      >
+        Local Proxy
+      </button>
     </div>
   )
 }
 
+function ProxyUrlField({ onToast, onSaved }: { onToast: (t: Toast) => void; onSaved: () => void }) {
+  const [url, setUrl] = useState('')
+  const [savedUrl, setSavedUrl] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((d: { proxyBaseUrl?: string }) => {
+        const value = d.proxyBaseUrl ?? DEFAULT_PROXY_BASE_URL
+        setUrl(value)
+        setSavedUrl(value)
+      })
+      .catch(() => setUrl(DEFAULT_PROXY_BASE_URL))
+  }, [])
+
+  async function handleSave() {
+    if (!url.trim()) {
+      onToast({ type: 'error', message: 'Please enter the proxy URL' })
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxyBaseUrl: url.trim() }),
+      })
+      const data = await res.json() as { error?: string; proxyBaseUrl?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save')
+      const normalized = data.proxyBaseUrl ?? url.trim()
+      setUrl(normalized)
+      setSavedUrl(normalized)
+      onToast({ type: 'success', message: 'Proxy URL saved' })
+      onSaved()
+    } catch (err) {
+      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save proxy URL' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const dirty = url.trim() !== savedUrl
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-sm font-medium text-zinc-300">Proxy URL</p>
+      <div className="flex gap-2.5">
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void handleSave()}
+          placeholder={DEFAULT_PROXY_BASE_URL}
+          className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder:text-zinc-500 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 transition-all duration-200 font-mono"
+        />
+        <button
+          onClick={() => void handleSave()}
+          disabled={saving || !dirty}
+          className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors shrink-0"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+      <p className="text-xs text-zinc-600">
+        OpenAI-compatible endpoint. CLIProxyAPI / EasyCLIProxyAPI defaults to <code className="font-mono">{DEFAULT_PROXY_BASE_URL}</code>.
+      </p>
+    </div>
+  )
+}
+
+function ProxyModelSelector({ onToast, refreshKey }: { onToast: (t: Toast) => void; refreshKey: number }) {
+  const [value, setValue] = useState('')
+  const [models, setModels] = useState<{ id: string; ownedBy?: string }[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((d: { proxyModel?: string }) => { if (d.proxyModel) setValue(d.proxyModel) })
+      .catch(() => {})
+  }, [])
+
+  const loadModels = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch('/api/settings/proxy-models')
+      const data = await res.json() as { models?: { id: string; ownedBy?: string }[]; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed to fetch models')
+      setModels(data.models ?? [])
+      if ((data.models ?? []).length === 0) setError('Proxy returned no models')
+    } catch (err) {
+      setModels([])
+      setError(err instanceof Error ? err.message : 'Failed to fetch models')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Fetch on mount and whenever the URL or key changes
+  useEffect(() => { void loadModels() }, [loadModels, refreshKey])
+
+  async function handleChange(newVal: string) {
+    const prev = value
+    setValue(newVal)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxyModel: newVal }),
+      })
+      if (!res.ok) throw new Error('Failed')
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch {
+      setValue(prev)
+      onToast({ type: 'error', message: 'Failed to save model preference' })
+    }
+  }
+
+  // Keep the saved model selectable even if the proxy no longer lists it
+  const options = value && !models.some((m) => m.id === value)
+    ? [{ id: value, ownedBy: undefined as string | undefined }, ...models]
+    : models
+  const selected = models.find((m) => m.id === value)
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mt-2.5">
+        <span className="text-xs text-zinc-500 shrink-0">Model:</span>
+        <div className="relative flex-1 min-w-0">
+          <select
+            value={value}
+            onChange={(e) => void handleChange(e.target.value)}
+            disabled={options.length === 0}
+            className="w-full appearance-none pl-3 pr-8 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {!value && (
+              <option value="" disabled>
+                {loading ? 'Loading models…' : options.length === 0 ? 'No models — fetch from proxy' : 'Select a model…'}
+              </option>
+            )}
+            {options.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}{m.ownedBy ? ` — ${m.ownedBy}` : ''}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+        </div>
+        <button
+          onClick={() => void loadModels()}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-zinc-600 text-zinc-300 text-xs font-medium transition-colors shrink-0 disabled:opacity-50"
+          title="Fetch models from proxy"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          {loading ? 'Fetching…' : 'Fetch models'}
+        </button>
+        {saved && (
+          <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
+            <Check size={12} /> Saved
+          </span>
+        )}
+      </div>
+      {error ? (
+        <p className="text-xs text-red-400 mt-1.5">{error}</p>
+      ) : !loading && models.length > 0 ? (
+        <p className="text-xs text-zinc-500 mt-1.5">
+          {models.length} model{models.length === 1 ? '' : 's'} available{selected?.ownedBy ? ` · ${value} via ${selected.ownedBy}` : ''}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+function ProxySettings({ onToast }: { onToast: (t: Toast) => void }) {
+  // Bumped after the URL or key changes so the model list refetches
+  const [refreshKey, setRefreshKey] = useState(0)
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  return (
+    <>
+      <div className="flex gap-3 p-3.5 rounded-xl bg-zinc-800/60 border border-zinc-700 mb-5">
+        <Server size={15} className="text-sky-400 shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-zinc-200">Use a local OpenAI-compatible proxy</p>
+          <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+            Works with CLIProxyAPI / EasyCLIProxyAPI and similar proxies. Enter the proxy URL and one of its configured API keys, then pick any model the proxy exposes.
+          </p>
+        </div>
+      </div>
+      <div className="space-y-5">
+        <ProxyUrlField onToast={onToast} onSaved={refresh} />
+        <div>
+          <ApiKeyField
+            label="Proxy API Key"
+            placeholder="One of the api-keys in your proxy config"
+            fieldKey="proxyApiKey"
+            hint="Leave empty if your proxy doesn't require a key."
+            docHref="https://github.com/router-for-me/CLIProxyAPI"
+            docLabel="Proxy docs"
+            onToast={onToast}
+            onChanged={refresh}
+            testProvider="proxy"
+          />
+          <ProxyModelSelector onToast={onToast} refreshKey={refreshKey} />
+          <p className="text-xs text-zinc-500 mt-1.5">Applies to all AI operations. Image analysis needs a vision-capable model.</p>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
-  const [provider, setProvider] = useState<'anthropic' | 'openai' | 'minimax' | null>(null)
+  const [provider, setProvider] = useState<AIProvider | null>(null)
 
   useEffect(() => {
     fetch('/api/settings')
       .then((r) => r.json())
       .then((d: { provider?: string }) => {
-        setProvider(d.provider === 'openai' ? 'openai' : d.provider === 'minimax' ? 'minimax' : 'anthropic')
+        setProvider(d.provider && d.provider in PROVIDER_LABELS ? d.provider as AIProvider : 'anthropic')
       })
       .catch(() => setProvider('anthropic'))
   }, [])
 
-  async function handleProviderChange(newProvider: 'anthropic' | 'openai' | 'minimax') {
+  async function handleProviderChange(newProvider: AIProvider) {
     const prev = provider
     setProvider(newProvider)
-    const labels: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', minimax: 'MiniMax' }
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -585,7 +835,7 @@ function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
         body: JSON.stringify({ provider: newProvider }),
       })
       if (!res.ok) throw new Error('Failed to save provider')
-      onToast({ type: 'success', message: `Switched to ${labels[newProvider]}` })
+      onToast({ type: 'success', message: `Switched to ${PROVIDER_LABELS[newProvider]}` })
     } catch {
       setProvider(prev) // revert on failure
       onToast({ type: 'error', message: 'Failed to save provider preference' })
@@ -663,6 +913,8 @@ function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
             </div>
           </div>
         </>
+      ) : provider === 'proxy' ? (
+        <ProxySettings onToast={onToast} />
       ) : (
         <div className="space-y-5">
           <div>

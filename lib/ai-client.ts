@@ -3,7 +3,9 @@ import OpenAI from 'openai'
 import { resolveAnthropicClient } from './claude-cli-auth'
 import { resolveOpenAIClient } from './openai-auth'
 import { resolveMiniMaxClient } from './minimax-auth'
-import { getProvider } from './settings'
+import { resolveProxyClient } from './proxy-auth'
+import { apiKeySettingFor, getProvider, getProxyBaseUrl, type AIProvider } from './settings'
+import prisma from './db'
 
 export interface AIContentBlock {
   type: 'text' | 'image'
@@ -21,7 +23,7 @@ export interface AIResponse {
 }
 
 export interface AIClient {
-  provider: 'anthropic' | 'openai' | 'minimax'
+  provider: AIProvider
   createMessage(params: {
     model: string
     max_tokens: number
@@ -137,11 +139,59 @@ export class MiniMaxAIClient implements AIClient {
   }
 }
 
+// Wrap a local OpenAI-compatible proxy (e.g. CLIProxyAPI). The proxy can route
+// to any upstream model, so reasoning-style <think> blocks are stripped too.
+export class ProxyAIClient implements AIClient {
+  provider = 'proxy' as const
+  constructor(private sdk: OpenAI) {}
+
+  async createMessage(params: { model: string; max_tokens: number; messages: AIMessage[] }): Promise<AIResponse> {
+    if (!params.model) {
+      throw new Error('No model selected for the local proxy. Choose one in Settings.')
+    }
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = params.messages.map((m): OpenAI.ChatCompletionMessageParam => {
+      if (typeof m.content === 'string') {
+        if (m.role === 'assistant') return { role: 'assistant' as const, content: m.content }
+        return { role: 'user' as const, content: m.content }
+      }
+      const parts: OpenAI.ChatCompletionContentPart[] = m.content.map(b => {
+        if (b.type === 'image' && b.source) {
+          return {
+            type: 'image_url' as const,
+            image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` },
+          }
+        }
+        return { type: 'text' as const, text: b.text ?? '' }
+      })
+      if (m.role === 'assistant') return { role: 'assistant' as const, content: parts.filter((p): p is OpenAI.ChatCompletionContentPartText => p.type === 'text') }
+      return { role: 'user' as const, content: parts }
+    })
+
+    const completion = await this.sdk.chat.completions.create({
+      model: params.model,
+      max_tokens: params.max_tokens,
+      messages,
+    })
+
+    let text = completion.choices[0]?.message?.content ?? ''
+    text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '')
+    return { text }
+  }
+}
+
 export async function resolveAIClient(options: {
   overrideKey?: string
   dbKey?: string
 } = {}): Promise<AIClient> {
   const provider = await getProvider()
+
+  if (provider === 'proxy') {
+    // Callers may not pass the proxy key, so read it from the DB when absent
+    const dbKey = options.dbKey || (await prisma.setting.findUnique({ where: { key: apiKeySettingFor('proxy') } }))?.value
+    const client = resolveProxyClient({ overrideKey: options.overrideKey, dbKey, baseURL: await getProxyBaseUrl() })
+    return new ProxyAIClient(client)
+  }
 
   if (provider === 'minimax') {
     const client = resolveMiniMaxClient(options)

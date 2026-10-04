@@ -3,6 +3,7 @@ import prisma from '@/lib/db'
 import { resolveAnthropicClient, getCliAuthStatus } from '@/lib/claude-cli-auth'
 import { resolveOpenAIClient } from '@/lib/openai-auth'
 import { resolveMiniMaxClient } from '@/lib/minimax-auth'
+import { resolveProxyClient, listProxyModels } from '@/lib/proxy-auth'
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   let body: { provider?: string } = {}
@@ -101,6 +102,47 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         ? 'Invalid API key'
         : msg.includes('403')
         ? 'Key does not have permission'
+        : msg.slice(0, 120)
+      return NextResponse.json({ working: false, error: friendly })
+    }
+  }
+
+  if (provider === 'proxy') {
+    const [keySetting, urlSetting, modelSetting] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: 'proxyApiKey' } }),
+      prisma.setting.findUnique({ where: { key: 'proxyBaseUrl' } }),
+      prisma.setting.findUnique({ where: { key: 'proxyModel' } }),
+    ])
+
+    let client
+    try {
+      client = resolveProxyClient({ dbKey: keySetting?.value, baseURL: urlSetting?.value })
+    } catch (err) {
+      return NextResponse.json({ working: false, error: err instanceof Error ? err.message : 'Invalid proxy URL' })
+    }
+
+    try {
+      // Use the selected model, or the first one the proxy offers
+      let model = modelSetting?.value?.trim()
+      if (!model) {
+        const models = await listProxyModels(client)
+        if (models.length === 0) {
+          return NextResponse.json({ working: false, error: 'Proxy returned no models' })
+        }
+        model = models[0].id
+      }
+      await client.chat.completions.create({
+        model,
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      return NextResponse.json({ working: true })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const friendly = msg.includes('401') || msg.includes('invalid_api_key')
+        ? 'Invalid API key'
+        : msg.includes('ECONNREFUSED') || msg.toLowerCase().includes('connection error')
+        ? 'Could not reach proxy — is it running?'
         : msg.slice(0, 120)
       return NextResponse.json({ working: false, error: friendly })
     }

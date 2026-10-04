@@ -50,6 +50,7 @@ app/
     settings/
       cli-status/     # GET — returns Claude CLI auth status
       test/           # POST — validates API key or CLI auth
+      proxy-models/   # GET — lists models from the local OpenAI-compatible proxy
     analyze/images/   # Vision analysis progress + trigger
     bookmarks/        # CRUD + filtering
     categories/       # Category management
@@ -64,6 +65,7 @@ app/
 
 lib/
   claude-cli-auth.ts  # Claude CLI OAuth session (macOS keychain)
+  proxy-auth.ts       # Local proxy provider (CLIProxyAPI / EasyCLIProxyAPI)
   categorizer.ts      # AI categorization + default categories
   vision-analyzer.ts  # Image vision + semantic tagging
   fts.ts              # SQLite FTS5 full-text search
