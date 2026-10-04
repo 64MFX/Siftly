@@ -57,6 +57,49 @@ describe('XTweetFetcher', () => {
     expect(fetcher.authMode).toBe('guest')
   })
 
+  it('reports a rejected login once and keeps going as a guest', async () => {
+    const onSessionRejected = vi.fn()
+    const { fetchImpl } = fakeX({
+      graphql: (_url, headers) =>
+        headers.Cookie
+          ? json({ errors: [{ code: 353, message: 'This request requires a matching csrf cookie and header.' }] }, { status: 403 })
+          : json({ data: { tweetResult: { result: articleTweetGraphql } } }),
+    })
+    const fetcher = new XTweetFetcher({ fetchImpl, queryId: 'Q', credentials: { authToken: 'a', ct0: 'c' }, onSessionRejected })
+    await fetcher.fetchTweet(ARTICLE_TWEET_ID)
+    await fetcher.fetchTweet(ARTICLE_TWEET_ID)
+    expect(onSessionRejected).toHaveBeenCalledTimes(1)
+    expect(fetcher.sessionRejected).toBe(true)
+  })
+
+  it("doesn't blame the login for a 403 from a proxy in the way", async () => {
+    const onSessionRejected = vi.fn()
+    const { fetchImpl } = fakeX({
+      graphql: () => new Response('<html>Blocked by proxy</html>', { status: 403 }),
+      syndication: () => json(syndicationTweet),
+    })
+    const fetcher = new XTweetFetcher({ fetchImpl, queryId: 'Q', credentials: { authToken: 'a', ct0: 'c' }, onSessionRejected })
+    const result = await fetcher.fetchTweet(SYNDICATION_TWEET_ID)
+    expect(result.source).toBe('x-syndication')
+    expect(onSessionRejected).not.toHaveBeenCalled()
+    expect(fetcher.authMode).toBe('session')
+  })
+
+  it('can ask GraphQL only, and reports when its rate limit resets', async () => {
+    const reset = Math.floor(Date.now() / 1000) + 600
+    const { fetchImpl, calls } = fakeX({
+      graphql: () => new Response(null, { status: 429, headers: { 'x-rate-limit-reset': String(reset) } }),
+      syndication: () => json(syndicationTweet),
+    })
+    const fetcher = new XTweetFetcher({ fetchImpl, queryId: 'Q' })
+    expect(fetcher.graphqlRateLimitedUntil).toBeNull()
+    const result = await fetcher.fetchTweet(SYNDICATION_TWEET_ID, { graphqlOnly: true })
+    expect(result.snapshot).toBeNull()
+    expect(calls.some((c) => c.startsWith('cdn.syndication'))).toBe(false)
+    expect(fetcher.graphqlRateLimitedUntil).toBe(reset * 1000)
+    expect(fetcher.graphqlPaused).toBe(true)
+  })
+
   it('adds feature flags X reports as missing and retries', async () => {
     const seen: Record<string, boolean>[] = []
     const { fetchImpl } = fakeX({

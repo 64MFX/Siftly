@@ -55,6 +55,8 @@ app/
     archive/          # Local archive: GET stats/job/folder, POST start, PUT change folder, DELETE stop
       [id]/           # GET archived copy, POST archive one bookmark now
       folders/        # GET folder picker listing + detected cloud-drive folders
+    x-account/        # X login: GET status, PUT paste cookies, DELETE log out
+      login/          # POST open the "Log in to X" browser window, DELETE cancel it
       files/[...path] # Serves archived files (Range support for video)
     bookmarks/        # CRUD + filtering
     categories/       # Category management
@@ -83,6 +85,9 @@ lib/
   archive-storage.ts  # Archive root, safe paths, media downloads
   archive-render.ts   # Offline index.html + content.md renderers
   archive-types.ts    # Archive document types (client-safe)
+  x-login.ts          # "Log in to X": opens the user's Chromium-family browser (temp profile, DevTools pipe), captures auth_token + ct0
+  x-session.ts        # Saved X login (Settings x_auth_token / x_ct0 / x_account), verification, rejection tracking
+  request-guard.ts    # Cross-site request check for routes that handle the X login
 
 prisma/schema.prisma  # SQLite schema (Bookmark, Category, MediaItem, Setting, ImportJob)
 ```
@@ -126,7 +131,8 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Add known tool | Append domain to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` |
 | Test API auth | `POST /api/settings/test` with `{"provider":"anthropic"}` |
 | Check CLI auth | `GET /api/settings/cli-status` |
-| Archive bookmarks locally | `POST /api/archive` with `{"mode":"pending"}` (or `retry` / `all`); `GET /api/archive` for progress. Imports never start it |
+| Archive bookmarks locally | `POST /api/archive` with `{"mode":"pending"}` (not downloaded yet), `retry` (incomplete + failed only) or `all`; `GET /api/archive` for progress. Imports never start it |
+| X login for full X Articles | Settings → X Login, or `PUT /api/x-account` with `{"authToken","ct0"}`; status via `GET /api/x-account`. The archiver reads it with `getXCredentials()` |
 | Change archive folder | `PUT /api/archive` with `{"archiveDir":"/abs/path","moveFiles":true}` (`null` = default) |
 | Archive one bookmark | `POST /api/archive/<id or tweetId>`; read it back with `GET /api/archive/<id>` |
 

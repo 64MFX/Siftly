@@ -24,6 +24,7 @@ import {
 import { decodeHtmlEntities, mergeSnapshots, parseStoredRaw, type TweetSnapshot } from '@/lib/tweet-snapshot'
 import { XTweetFetcher, type FetchLike, type RemoteTweet } from '@/lib/x-tweet-fetcher'
 import { getArchiveRoot, isArchiveRelocating } from '@/lib/archive-location'
+import { getXCredentials, markXSessionRejected } from '@/lib/x-session'
 import {
   archiveFolderName,
   downloadToFile,
@@ -61,6 +62,12 @@ export interface BuildArchiveDeps {
   fetchImpl?: FetchLike
   /** Source of fresh copies from X — null archives from stored data only */
   fetcher: XTweetFetcher | null
+  /**
+   * An X Article's full body is missing because X's rate limit paused GraphQL.
+   * Resolve true once `until` (ms) has passed to try again, false to give up.
+   * Background jobs wait; one-off archives from the UI don't.
+   */
+  waitForRateLimit?: (until: number) => Promise<boolean>
   now?: Date
 }
 
@@ -147,6 +154,22 @@ function dbMediaToArchived(item: ArchiveSourceMediaItem): ArchivedMedia {
     : { type, url: item.url, ...(item.thumbnailUrl ? { posterUrl: item.thumbnailUrl } : {}) }
 }
 
+function formatClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** Why an X Article only has its preview, and what fixes it */
+function articlePreviewWarning(fetcher: XTweetFetcher | null, remote: RemoteTweet | null): string {
+  const lead = "Only the article's preview was saved"
+  if (!fetcher) return `${lead} — X wasn't contacted for this copy.`
+  if (fetcher.sessionRejected) return `${lead}: X rejected your saved login. Log in to X again in Settings → X Login, then retry.`
+  if (fetcher.authMode === 'guest') return `${lead}: X only shows the full text to logged-in users. Log in to X in Settings → X Login, then retry.`
+  const until = fetcher.graphqlRateLimitedUntil
+  if (until) return `${lead}: X's rate limit was reached. Retry after ${formatClock(until)}.`
+  if (remote?.source === 'x-graphql') return `${lead}: X didn't include the full text, even with your login.`
+  return `${lead}: X didn't return the full text (${remote?.errors.join('; ') || 'no response'}). Retry later.`
+}
+
 function identitiesOf(m: ArchivedMedia | undefined): Set<string> {
   const ids = new Set<string>()
   for (const url of [m?.url, m?.posterUrl]) {
@@ -191,9 +214,26 @@ export async function buildArchive(
   // articles and file imports, which need it.
   const knownArticle = stored?.article ?? previous?.article
   const preferSyndication = parsedStored?.format === 'graphql' && !(knownArticle && !knownArticle.complete)
-  const remote: RemoteTweet | null = deps.fetcher ? await deps.fetcher.fetchTweet(bookmark.tweetId, { preferSyndication }) : null
-
+  let remote: RemoteTweet | null = deps.fetcher ? await deps.fetcher.fetchTweet(bookmark.tweetId, { preferSyndication }) : null
   let snap = mergeSnapshots(mergeSnapshots(remote?.snapshot ?? null, stored), previous)
+
+  // Only X GraphQL returns an X Article's full body. If it wasn't used (the
+  // stored copy looked complete, or its rate limit was hit), ask it directly —
+  // after waiting out the rate limit when logged in and the caller allows it.
+  if (deps.fetcher && snap?.article && !snap.article.complete && remote?.source !== 'x-graphql') {
+    const until = deps.fetcher.graphqlRateLimitedUntil
+    const ready =
+      until === null
+        ? !deps.fetcher.graphqlPaused
+        : deps.fetcher.authMode === 'session' && !!deps.waitForRateLimit && (await deps.waitForRateLimit(until))
+    if (ready) {
+      const direct = await deps.fetcher.fetchTweet(bookmark.tweetId, { graphqlOnly: true })
+      if (direct.snapshot) {
+        remote = direct
+        snap = mergeSnapshots(mergeSnapshots(direct.snapshot, stored), previous)
+      }
+    }
+  }
   if (!snap) snap = { tweetId: bookmark.tweetId, text: '', media: [] }
 
   const unavailableOnX = !!remote?.unavailable || !!remote?.snapshot?.unavailable
@@ -361,9 +401,7 @@ export async function buildArchive(
       block.type === 'media' ? { ...block, media: report(results) } : block,
     )
     localizedArticle = { ...article, blocks, ...(cover ? { coverImage: cover } : {}) }
-    if (!article.complete) {
-      warn("Only the article's preview was available — X didn't return the full text. Saving your X session in Import → Live sync usually fixes this.")
-    }
+    if (!article.complete) warn(articlePreviewWarning(deps.fetcher, remote))
   }
 
   const quote = snap.quote
@@ -484,20 +522,24 @@ const store = globalThis as unknown as {
 }
 const inFlight = (store.siftlyArchiveInFlight ??= new Map())
 
+/** A fetcher using the X login from Settings → X Login (guest access without one) */
 export async function createXFetcher(fetchImpl?: FetchLike): Promise<XTweetFetcher> {
-  const [authToken, ct0] = await Promise.all([
-    prisma.setting.findUnique({ where: { key: 'x_auth_token' } }),
-    prisma.setting.findUnique({ where: { key: 'x_ct0' } }),
-  ])
-  const credentials = authToken?.value && ct0?.value ? { authToken: authToken.value, ct0: ct0.value } : null
-  return new XTweetFetcher({ credentials, fetchImpl })
+  return new XTweetFetcher({
+    credentials: await getXCredentials(),
+    fetchImpl,
+    onSessionRejected: () => void markXSessionRejected(),
+  })
 }
 
 /** Archive one bookmark now. Concurrent calls for the same bookmark share one run. */
-export function archiveBookmark(
-  bookmarkId: string,
-  options: { fetcher?: XTweetFetcher | null; fetchImpl?: FetchLike; root?: string } = {},
-): Promise<ArchiveBookmarkResult> {
+export interface ArchiveBookmarkOptions {
+  fetcher?: XTweetFetcher | null
+  fetchImpl?: FetchLike
+  root?: string
+  waitForRateLimit?: (until: number) => Promise<boolean>
+}
+
+export function archiveBookmark(bookmarkId: string, options: ArchiveBookmarkOptions = {}): Promise<ArchiveBookmarkResult> {
   const running = inFlight.get(bookmarkId)
   if (running) return running
   if (isArchiveRelocating()) return Promise.reject(new Error('The archive folder is being moved — try again in a moment'))
@@ -506,10 +548,7 @@ export function archiveBookmark(
   return run
 }
 
-async function runArchiveBookmark(
-  bookmarkId: string,
-  options: { fetcher?: XTweetFetcher | null; fetchImpl?: FetchLike; root?: string },
-): Promise<ArchiveBookmarkResult> {
+async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOptions): Promise<ArchiveBookmarkResult> {
   const bookmark = await prisma.bookmark.findUnique({
     where: { id: bookmarkId },
     include: { mediaItems: { select: { id: true, type: true, url: true, thumbnailUrl: true } } },
@@ -522,6 +561,7 @@ async function runArchiveBookmark(
       root: options.root ?? (await getArchiveRoot()),
       fetcher,
       fetchImpl: options.fetchImpl,
+      waitForRateLimit: options.waitForRateLimit,
     })
     const archivedAt = new Date(result.doc.archivedAt)
 
@@ -581,7 +621,7 @@ export async function readArchiveDocument(tweetId: string, root?: string): Promi
 
 // ── Background job ───────────────────────────────────────────────────────────
 
-/** pending = nothing saved yet (never tried, or failed) · retry = pending + incomplete · all = everything */
+/** pending = nothing saved yet (never tried, or failed) · retry = incomplete or failed · all = everything */
 export type ArchiveMode = 'pending' | 'retry' | 'all'
 
 export interface ArchiveJobState {
@@ -596,6 +636,8 @@ export interface ArchiveJobState {
   startedAt: string | null
   finishedAt: string | null
   error: string | null
+  /** Paused until X's rate limit resets (ISO time) */
+  waitingUntil: string | null
 }
 
 interface ArchiveJob {
@@ -604,6 +646,22 @@ interface ArchiveJob {
 }
 
 const JOB_CONCURRENCY = 3
+/** X's rate-limit windows are 15 minutes; anything longer isn't worth waiting for */
+const MAX_RATE_LIMIT_WAIT_MS = 20 * 60_000
+
+/**
+ * Sleep until X's rate limit resets at `until` (ms), plus a second. Resolves
+ * false straight away if that's too far off, or as soon as `stopped()` is true.
+ */
+export async function waitForRateLimitReset(until: number, stopped: () => boolean, maxWaitMs = MAX_RATE_LIMIT_WAIT_MS): Promise<boolean> {
+  const resumeAt = until + 1000
+  if (resumeAt - Date.now() > maxWaitMs) return false
+  while (Date.now() < resumeAt) {
+    if (stopped()) return false
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, resumeAt - Date.now())))
+  }
+  return !stopped()
+}
 
 function job(): ArchiveJob {
   store.siftlyArchiveJob ??= {
@@ -619,6 +677,7 @@ function job(): ArchiveJob {
       startedAt: null,
       finishedAt: null,
       error: null,
+      waitingUntil: null,
     },
     abort: false,
   }
@@ -637,9 +696,10 @@ export function stopArchiveJob(): boolean {
   return true
 }
 
-function whereForMode(mode: ArchiveMode) {
+/** Which bookmarks a run covers */
+export function archiveWhereForMode(mode: ArchiveMode) {
   if (mode === 'all') return {}
-  if (mode === 'retry') return { OR: [{ archivedAt: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
+  if (mode === 'retry') return { archiveStatus: { in: ['partial', 'failed'] } }
   return { archivedAt: null }
 }
 
@@ -665,6 +725,7 @@ export function startArchiveJob(options: { mode?: ArchiveMode; bookmarkIds?: str
     startedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,
+    waitingUntil: null,
   }
   void runJob(mode, options.bookmarkIds)
   return true
@@ -673,7 +734,7 @@ export function startArchiveJob(options: { mode?: ArchiveMode; bookmarkIds?: str
 async function runJob(mode: ArchiveMode, bookmarkIds?: string[]): Promise<void> {
   const j = job()
   try {
-    const where = bookmarkIds && bookmarkIds.length > 0 ? { id: { in: bookmarkIds } } : whereForMode(mode)
+    const where = bookmarkIds && bookmarkIds.length > 0 ? { id: { in: bookmarkIds } } : archiveWhereForMode(mode)
     const queue = await prisma.bookmark.findMany({
       where,
       select: { id: true, tweetId: true, authorHandle: true },
@@ -682,13 +743,25 @@ async function runJob(mode: ArchiveMode, bookmarkIds?: string[]): Promise<void> 
     j.state = { ...j.state, total: queue.length }
     const fetcher = await createXFetcher()
 
+    // Article bodies need X GraphQL: when its rate limit hits, pause the run instead of saving previews
+    let waiting = 0
+    const waitForRateLimit = async (until: number) => {
+      waiting++
+      j.state = { ...j.state, waitingUntil: new Date(until).toISOString() }
+      try {
+        return await waitForRateLimitReset(until, () => j.abort)
+      } finally {
+        if (--waiting === 0) j.state = { ...j.state, waitingUntil: null }
+      }
+    }
+
     let next = 0
     const worker = async () => {
       while (!j.abort && next < queue.length) {
         const item = queue[next++]
         j.state = { ...j.state, current: item.authorHandle !== 'unknown' ? `@${item.authorHandle}` : item.tweetId }
         try {
-          const result = await archiveBookmark(item.id, { fetcher })
+          const result = await archiveBookmark(item.id, { fetcher, waitForRateLimit })
           j.state = {
             ...j.state,
             done: j.state.done + 1,
@@ -702,11 +775,14 @@ async function runJob(mode: ArchiveMode, bookmarkIds?: string[]): Promise<void> 
       }
     }
     await Promise.all(Array.from({ length: Math.min(JOB_CONCURRENCY, Math.max(queue.length, 1)) }, worker))
+    if (fetcher.sessionRejected) {
+      j.state = { ...j.state, error: 'X rejected your saved login, so the rest ran without it. Log in to X again in Settings → X Login, then retry.' }
+    }
   } catch (err) {
     j.state = { ...j.state, error: err instanceof Error ? err.message : String(err) }
     console.error('[archive] Job failed:', err)
   } finally {
-    j.state = { ...j.state, status: 'idle', current: null, finishedAt: new Date().toISOString() }
+    j.state = { ...j.state, status: 'idle', current: null, waitingUntil: null, finishedAt: new Date().toISOString() }
   }
 }
 

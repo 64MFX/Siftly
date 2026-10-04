@@ -3,8 +3,8 @@
  *
  * 1. GraphQL `TweetResultByRestId` — the only source that returns the full
  *    body of X Articles (`withArticleRichContentState`), long-form note tweets,
- *    quoted tweets and every video variant. Uses the X session cookies saved
- *    for live sync when available, otherwise a guest token.
+ *    quoted tweets and every video variant. Uses the X login saved in
+ *    Settings → X Login when available, otherwise a guest token.
  * 2. Public syndication API — no auth, used when GraphQL is unavailable,
  *    rate limited or rejects the request.
  *
@@ -79,6 +79,30 @@ export interface XCredentials {
   ct0: string
 }
 
+function webClientHeaders(): Record<string, string> {
+  return {
+    Authorization: `Bearer ${X_WEB_BEARER}`,
+    'User-Agent': BROWSER_UA,
+    Accept: '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Content-Type': 'application/json',
+    'X-Twitter-Active-User': 'yes',
+    'X-Twitter-Client-Language': 'en',
+    Referer: 'https://x.com/',
+    Origin: 'https://x.com',
+  }
+}
+
+/** Headers the x.com web client sends for a logged-in session */
+export function sessionHeaders(credentials: XCredentials): Record<string, string> {
+  return {
+    ...webClientHeaders(),
+    Cookie: `auth_token=${credentials.authToken}; ct0=${credentials.ct0}`,
+    'X-Csrf-Token': credentials.ct0,
+    'X-Twitter-Auth-Type': 'OAuth2Session',
+  }
+}
+
 export interface RemoteTweet {
   /** Null when X could not be reached or the tweet is gone */
   snapshot: TweetSnapshot | null
@@ -99,6 +123,16 @@ let discoveryInFlight: Promise<string | null> | null = null
 
 export function syndicationToken(tweetId: string): string {
   return ((Number(tweetId) / 1e15) * Math.PI).toString(6 ** 2).replace(/(0+|\.)/g, '')
+}
+
+/**
+ * Whether X itself refused the credentials. X answers 401, or 403 with its own
+ * JSON error list (e.g. code 353, csrf mismatch). A bare 403 is more likely a
+ * proxy or firewall in the way, which says nothing about the login.
+ */
+export function isXAuthRejection(status: number, body: unknown): boolean {
+  if (status === 401) return true
+  return status === 403 && Array.isArray((body as { errors?: unknown } | null)?.errors)
 }
 
 export function parseMissingFeatures(body: unknown): string[] {
@@ -133,31 +167,60 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+export interface XTweetFetcherOptions {
+  fetchImpl?: FetchLike
+  credentials?: XCredentials | null
+  queryId?: string
+  /** Called once if X rejects the saved login (the run then continues as a guest) */
+  onSessionRejected?: () => void
+}
+
 export class XTweetFetcher {
   private readonly fetchImpl: FetchLike
   private credentials: XCredentials | null
   private readonly queryIdOverride?: string
+  private readonly onSessionRejected?: () => void
   private guestToken: { value: string; expires: number } | null = null
   private graphqlPausedUntil = 0
   private graphqlPauseReason = ''
+  private graphqlRateLimited = false
+  private rejected = false
   private extraFeatures: Record<string, boolean> = {}
 
-  constructor(options: { fetchImpl?: FetchLike; credentials?: XCredentials | null; queryId?: string } = {}) {
+  constructor(options: XTweetFetcherOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
     this.credentials = options.credentials ?? null
     this.queryIdOverride = options.queryId ?? (process.env.SIFTLY_X_TWEET_QUERY_ID?.trim() || undefined)
+    this.onSessionRejected = options.onSessionRejected
   }
 
   get authMode(): 'session' | 'guest' {
     return this.credentials ? 'session' : 'guest'
   }
 
+  /** X rejected the saved login during this run */
+  get sessionRejected(): boolean {
+    return this.rejected
+  }
+
+  /** When X GraphQL is paused by a rate limit: the time (ms) it resets, otherwise null */
+  get graphqlRateLimitedUntil(): number | null {
+    return this.graphqlRateLimited && Date.now() < this.graphqlPausedUntil ? this.graphqlPausedUntil : null
+  }
+
+  /** X GraphQL is currently skipped (rate limit or repeated errors) */
+  get graphqlPaused(): boolean {
+    return Date.now() < this.graphqlPausedUntil
+  }
+
   /**
    * `preferSyndication`: try the public syndication API first. Use it when the
    * stored copy is already a rich GraphQL payload and only needs refreshing —
    * this saves X's tight GraphQL rate limit for articles and file imports.
+   * `graphqlOnly`: skip syndication (used to fetch an X Article's full body,
+   * which only GraphQL returns).
    */
-  async fetchTweet(tweetId: string, options: { preferSyndication?: boolean } = {}): Promise<RemoteTweet> {
+  async fetchTweet(tweetId: string, options: { preferSyndication?: boolean; graphqlOnly?: boolean } = {}): Promise<RemoteTweet> {
     const errors: string[] = []
     let gone = false
 
@@ -191,7 +254,9 @@ export class XTweetFetcher {
       return null
     }
 
-    const steps = options.preferSyndication ? [viaSyndication, viaGraphql] : [viaGraphql, viaSyndication]
+    const steps = options.graphqlOnly
+      ? [viaGraphql]
+      : options.preferSyndication ? [viaSyndication, viaGraphql] : [viaGraphql, viaSyndication]
     for (const step of steps) {
       const result = await step()
       if (result) return result
@@ -201,9 +266,10 @@ export class XTweetFetcher {
 
   // ── GraphQL ──────────────────────────────────────────────────────────────
 
-  private pauseGraphql(until: number, reason: string) {
+  private pauseGraphql(until: number, reason: string, rateLimited = false) {
     this.graphqlPausedUntil = until
     this.graphqlPauseReason = reason
+    this.graphqlRateLimited = rateLimited
   }
 
   private async queryId(): Promise<string> {
@@ -234,26 +300,8 @@ export class XTweetFetcher {
   }
 
   private async headers(): Promise<Record<string, string>> {
-    const common: Record<string, string> = {
-      Authorization: `Bearer ${X_WEB_BEARER}`,
-      'User-Agent': BROWSER_UA,
-      Accept: '*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Content-Type': 'application/json',
-      'X-Twitter-Active-User': 'yes',
-      'X-Twitter-Client-Language': 'en',
-      Referer: 'https://x.com/',
-      Origin: 'https://x.com',
-    }
-    if (this.credentials) {
-      return {
-        ...common,
-        Cookie: `auth_token=${this.credentials.authToken}; ct0=${this.credentials.ct0}`,
-        'X-Csrf-Token': this.credentials.ct0,
-        'X-Twitter-Auth-Type': 'OAuth2Session',
-      }
-    }
-    return { ...common, 'X-Guest-Token': await this.activateGuestToken() }
+    if (this.credentials) return sessionHeaders(this.credentials)
+    return { ...webClientHeaders(), 'X-Guest-Token': await this.activateGuestToken() }
   }
 
   private async fetchGraphql(tweetId: string): Promise<GraphqlOutcome> {
@@ -273,14 +321,23 @@ export class XTweetFetcher {
       if (res.status === 429) {
         const resetSecs = Number(res.headers.get('x-rate-limit-reset'))
         const until = Number.isFinite(resetSecs) && resetSecs > 0 ? resetSecs * 1000 : Date.now() + 15 * 60 * 1000
-        this.pauseGraphql(until, `rate limited until ${new Date(until).toLocaleTimeString()}`)
+        this.pauseGraphql(until, `rate limited until ${new Date(until).toLocaleTimeString()}`, true)
         throw new Error('rate limited by X')
       }
 
-      if (res.status === 401 || res.status === 403) {
+      const body = (await res.json().catch(() => null)) as {
+        data?: { tweetResult?: { result?: unknown } }
+        errors?: { message?: string }[]
+      } | null
+
+      if (isXAuthRejection(res.status, body)) {
         if (this.credentials) {
-          // Saved session expired — continue this run as a guest
+          // Saved login expired or was revoked — continue this run as a guest
           this.credentials = null
+          if (!this.rejected) {
+            this.rejected = true
+            this.onSessionRejected?.()
+          }
           continue
         }
         if (attempt === 0) {
@@ -288,11 +345,6 @@ export class XTweetFetcher {
           continue
         }
       }
-
-      const body = (await res.json().catch(() => null)) as {
-        data?: { tweetResult?: { result?: unknown } }
-        errors?: { message?: string }[]
-      } | null
 
       const missing = parseMissingFeatures(body)
       if (missing.length > 0) {

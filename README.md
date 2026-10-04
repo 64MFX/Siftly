@@ -211,7 +211,7 @@ Tweets get deleted, accounts get suspended, articles get pulled. The local archi
 - **X Articles** — the full body with headings, lists, quotes, code, links, and every inline image, video and embedded post **in its original position**
 - **Quoted posts**, link-preview cards, polls and author avatars
 
-Nothing is downloaded automatically — importing never touches the archive. Click **Download N bookmarks** on the dashboard to save every bookmark that isn't downloaded yet, or hover a card and click the drive icon to save just that one. **Settings → Local Archive** shows progress, retries incomplete downloads and lets you pick the folder. Saved bookmarks show a green **Saved** chip — click it to read the archived copy inside Siftly. Cards play saved videos inline instead of linking out to X.
+Nothing is downloaded automatically — importing never touches the archive. Click **Download N bookmarks** on the dashboard to save every bookmark that isn't downloaded yet, or hover a card and click the drive icon to save just that one. **Settings → Local Archive** shows progress, lets you pick the folder, and has **Retry** for bookmarks that came out incomplete or failed (it only re-fetches those). Saved bookmarks show a green **Saved** chip — click it to read the archived copy inside Siftly. Cards play saved videos inline instead of linking out to X.
 
 Each bookmark gets its own folder you can open without Siftly:
 
@@ -226,7 +226,15 @@ Each bookmark gets its own folder you can open without Siftly:
 
 By default the archive lives next to your database (`prisma/archive/` locally, `/data/archive/` in Docker). To keep it in **Google Drive, iCloud Drive, Dropbox, OneDrive** or any other folder, open **Settings → Local Archive → Change**: Siftly lists the cloud folders it finds on your computer, has a folder browser, and can move the files you've already downloaded. If you choose not to move them, bookmarks whose copy isn't in the new folder go back to *not downloaded* so the dashboard button fetches them again. (`SIFTLY_ARCHIVE_DIR` sets the default folder; a folder chosen in Settings takes precedence.) Re-archiving never deletes anything: if a post has since been removed from X, Siftly keeps the files and text it already saved.
 
-> **X Articles in full:** X only returns article bodies to logged-in sessions reliably. If you've saved your `auth_token` + `ct0` for **Import → Live sync**, the archiver uses them; otherwise it uses guest access and may only capture the article preview (it's marked *incomplete* so you can retry later).
+#### Log in to X for full X Articles
+
+X only shows the full body of X Articles to logged-in users. Without a login the archive saves the article's preview and marks the bookmark *incomplete*. To get everything:
+
+1. Open **Settings → X Login** and click **Log in to X**. Siftly opens Chrome, Edge, Brave or Chromium in a separate, temporary window on x.com.
+2. Log in there as usual (2FA included). You type your password into X itself — Siftly never sees it. As soon as you're in, Siftly saves the session, closes the window and deletes the temporary browser profile.
+3. Click **Retry now** (or **Retry** in Local Archive). Incomplete bookmarks are fetched again with your login. If X's rate limit is hit mid-run, the download pauses until it resets instead of saving more previews.
+
+No supported browser, or running in Docker? Use **Paste cookies instead**: copy the `auth_token` and `ct0` cookies from a browser where you're logged in to x.com (Developer Tools → Application → Cookies). If X later stops accepting the login (it expired or was logged out), Settings says so and asks you to log in again. **Log out** removes the login from Siftly; to end the session on X too, use X's *Settings → Security and account access → Apps and sessions*.
 
 From the CLI: `npx tsx cli/siftly.ts archive` (`--mode retry|all`, `--id <tweetId>`, `--limit N`), `npx tsx cli/siftly.ts archive-status`, and `npx tsx cli/siftly.ts archive-dir "<folder>"` (`--no-move`, `--reset`) to change the folder.
 
@@ -275,6 +283,7 @@ All settings are manageable in the **Settings** page at `/settings` or via envir
 | Local Proxy Key | `AI_PROXY_API_KEY` | One of the `api-keys` configured in the proxy |
 | Database | `DATABASE_URL` | SQLite file path (default: `file:./prisma/dev.db`) |
 | Local archive folder | Settings page or `SIFTLY_ARCHIVE_DIR` | Where archived tweets/media are saved (default: `archive/` next to the database). A folder picked in Settings wins over the env var |
+| Browser for "Log in to X" | `SIFTLY_BROWSER_PATH` | Chrome / Edge / Brave / Chromium executable to open for Settings → X Login, if it isn't found automatically |
 
 ### Custom API Endpoint
 
@@ -444,6 +453,7 @@ Add domain strings to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` to have
 - All data is stored **locally** in a SQLite file on your machine
 - The only external calls are to the AI provider you configure (tweet text + image data) and to X itself (link previews, media, and — when you archive — fetching each post and its media from X's servers)
 - Archived tweets, articles and media are saved as plain files on your disk; nothing is uploaded anywhere
+- If you log in to X (Settings → X Login), the session cookies are stored only in your local database and only sent to X; Siftly never sees your X password
 - No telemetry, no tracking, no accounts required
 - Your bookmarks never touch any third-party server except your configured AI endpoint
 

@@ -1,6 +1,5 @@
 import { existsSync } from 'fs'
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/db'
 import {
   getArchiveJobState,
   getArchiveStats,
@@ -11,6 +10,7 @@ import {
 } from '@/lib/archiver'
 import { ArchiveLocationError, getArchiveLocation, isArchiveRelocating, setArchiveDir } from '@/lib/archive-location'
 import { directorySize } from '@/lib/archive-storage'
+import { getXSessionStatus } from '@/lib/x-session'
 
 /** GET — archive stats, background job progress and the archive folder. `?usage=1` adds disk usage. */
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const withUsage = request.nextUrl.searchParams.get('usage') === '1'
     const [stats, xSession, bytes] = await Promise.all([
       getArchiveStats(),
-      prisma.setting.count({ where: { key: { in: ['x_auth_token', 'x_ct0'] }, value: { not: '' } } }),
+      getXSessionStatus(),
       withUsage ? directorySize(location.dir) : Promise.resolve(null),
     ])
     return NextResponse.json({
@@ -32,7 +32,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       // Inside Docker a folder only reaches the host if it is mounted as a volume
       inDocker: existsSync('/.dockerenv'),
       diskUsageBytes: bytes,
-      xAccess: xSession === 2 ? 'session' : 'guest',
+      xAccess: xSession.loggedIn ? 'session' : 'guest',
+      xLogin: {
+        loggedIn: xSession.loggedIn,
+        screenName: xSession.account?.screenName ?? null,
+        rejectedAt: xSession.rejectedAt,
+      },
     })
   } catch (err) {
     return NextResponse.json(
