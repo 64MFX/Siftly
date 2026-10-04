@@ -1,4 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server'
+import fs from 'fs'
+import path from 'path'
+import { Readable } from 'stream'
+import prisma from '@/lib/db'
+import { resolveLocalFile } from '@/lib/media-archive'
+
+const MIME: Record<string, string> = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+}
+
+/** Serves the archived copy (with Range support), or null if none exists. */
+async function serveLocal(mediaUrl: string, rangeHeader: string | null, isDownload: boolean): Promise<NextResponse | null> {
+  const item = await prisma.mediaItem.findFirst({
+    where: { OR: [{ url: mediaUrl }, { thumbnailUrl: mediaUrl }], localPath: { not: null } },
+    select: { localPath: true },
+  })
+  const file = item?.localPath ? resolveLocalFile(item.localPath) : null
+  if (!file) return null
+
+  const size = (await fs.promises.stat(file)).size
+  const headers: Record<string, string> = {
+    'Content-Type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'Cache-Control': 'public, max-age=86400',
+    'Accept-Ranges': 'bytes',
+  }
+  if (isDownload) headers['Content-Disposition'] = `attachment; filename="${path.basename(file)}"`
+
+  const m = rangeHeader?.match(/^bytes=(\d*)-(\d*)$/)
+  if (m && (m[1] || m[2])) {
+    const start = Math.max(m[1] ? parseInt(m[1], 10) : size - parseInt(m[2], 10), 0)
+    const end = m[1] && m[2] ? Math.min(parseInt(m[2], 10), size - 1) : size - 1
+    if (start > end || start >= size) {
+      return new NextResponse(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+    }
+    headers['Content-Range'] = `bytes ${start}-${end}/${size}`
+    headers['Content-Length'] = String(end - start + 1)
+    const stream = Readable.toWeb(fs.createReadStream(file, { start, end })) as ReadableStream
+    return new NextResponse(stream, { status: 206, headers })
+  }
+  headers['Content-Length'] = String(size)
+  return new NextResponse(Readable.toWeb(fs.createReadStream(file)) as ReadableStream, { status: 200, headers })
+}
 
 const ALLOWED_HOSTS = new Set([
   'pbs.twimg.com',
@@ -42,6 +85,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   if (!isAllowedUrl(mediaUrl)) {
     return NextResponse.json({ error: 'URL not allowed' }, { status: 403 })
+  }
+
+  try {
+    const local = await serveLocal(mediaUrl, request.headers.get('range'), isDownload)
+    if (local) return local
+  } catch (err) {
+    console.error('Local media lookup failed, falling back to upstream:', err)
   }
 
   try {

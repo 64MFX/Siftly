@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Command,
   Bookmark,
+  HardDriveDownload,
 } from 'lucide-react'
 
 interface NavItem {
@@ -29,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/bookmarks', label: 'Browse', icon: Search },
   { href: '/mindmap', label: 'Mindmap', icon: GitBranch },
   { href: '/import', label: 'Import', icon: Upload },
+  { href: '/archive', label: 'Archive', icon: HardDriveDownload },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]
 
