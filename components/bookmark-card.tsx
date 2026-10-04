@@ -1,10 +1,11 @@
 'use client'
 
 import React, { useRef, useEffect, useState } from 'react'
-import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe, HardDrive, HardDriveDownload, Loader2 } from 'lucide-react'
+import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
 import type { BookmarkWithMedia, Category } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
 import ArchiveReader from '@/components/archive-reader'
+import DeleteBookmarkDialog from '@/components/delete-bookmark-dialog'
 
 // ── URL helpers ────────────────────────────────────────────────────────────────
 
@@ -619,9 +620,11 @@ function CategoryEditor({ bookmarkId, currentCategoryIds, onSave, onClose }: Cat
 
 interface BookmarkCardProps {
   bookmark: BookmarkWithMedia
+  /** Called after the bookmark was deleted — the card hides itself either way */
+  onDeleted?: (id: string) => void
 }
 
-export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
+export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps) {
   const [categories, setCategories] = useState(bookmark.categories)
   const [expanded, setExpanded] = useState(false)
   const [editingCategories, setEditingCategories] = useState(false)
@@ -631,6 +634,8 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
   const [archiving, setArchiving] = useState(false)
   const [archiveMessage, setArchiveMessage] = useState<string | null>(null)
   const [readerOpen, setReaderOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleted, setDeleted] = useState(false)
 
   const tweetUrl = (bookmark.authorHandle && bookmark.authorHandle !== 'unknown')
     ? `https://twitter.com/${bookmark.authorHandle}/status/${bookmark.tweetId}`
@@ -761,9 +766,16 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
     URL.revokeObjectURL(url)
   }
 
+  function handleDeleted(id: string) {
+    setDeleted(true)
+    onDeleted?.(id)
+  }
+
   // Only show download if media is a photo or a real video (not a thumbnail JPEG stored as video)
   const isDownloadable = firstMedia !== null &&
     (firstMedia.type === 'photo' || isVideoUrl(firstMedia.url) || !!firstMedia.localPath)
+
+  if (deleted) return null
 
   return (
     <div className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-zinc-700 hover:shadow-xl hover:shadow-black/30 transition-all duration-200 flex flex-col flex-1">
@@ -831,6 +843,13 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
             >
               <ExternalLink size={13} />
             </a>
+            <button
+              onClick={() => setDeleteOpen(true)}
+              className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              title="Delete from Siftly"
+            >
+              <Trash2 size={13} />
+            </button>
           </div>
         </div>
 
@@ -936,6 +955,16 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
       </div>
 
       {readerOpen && <ArchiveReader bookmarkId={bookmark.id} onClose={() => setReaderOpen(false)} />}
+      {deleteOpen && (
+        <DeleteBookmarkDialog
+          bookmark={bookmark}
+          categorySlugs={categories.map((c) => c.slug)}
+          archived={isArchived}
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={handleDeleted}
+        />
+      )}
     </div>
   )
 }

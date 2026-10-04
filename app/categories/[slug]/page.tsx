@@ -180,7 +180,15 @@ export default function CategoryPage() {
       {!loading && bookmarks.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {bookmarks.map((bookmark) => (
-            <BookmarkCard key={bookmark.id} bookmark={bookmark} />
+            <BookmarkCard
+              key={bookmark.id}
+              bookmark={bookmark}
+              onDeleted={(id) => setData((prev) => prev && {
+                ...prev,
+                bookmarks: prev.bookmarks.filter((b) => b.id !== id),
+                total: Math.max(0, prev.total - 1),
+              })}
+            />
           ))}
         </div>
       )}

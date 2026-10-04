@@ -2,6 +2,7 @@
 import prisma from '@/lib/db'
 import { ftsSearch } from '@/lib/fts'
 import { extractKeywords } from '@/lib/search-utils'
+import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
 import {
   archiveBookmark,
   archiveWhereForMode,
@@ -122,6 +123,8 @@ async function cmdList(args: string[]) {
   }
   if (flags.media === 'photo' || flags.media === 'video') {
     where.mediaItems = { some: { type: flags.media } }
+  } else if (flags.media === 'article') {
+    where.AND = [ARTICLE_WHERE]
   }
 
   const [bookmarks, total] = await Promise.all([
@@ -343,7 +346,7 @@ function formatBookmark(b: any) {
 
 const COMMANDS: Record<string, string> = {
   search: 'search <query>           FTS5 keyword search',
-  list: 'list [--source] [--category] [--author] [--media] [--sort] [--limit] [--page]',
+  list: 'list [--source] [--category] [--author] [--media photo|video|article] [--sort] [--limit] [--page]',
   show: 'show <id|tweetId>         Full bookmark detail',
   categories: 'categories                List categories with counts',
   stats: 'stats                     Library statistics',

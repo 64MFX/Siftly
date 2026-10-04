@@ -34,6 +34,7 @@ import {
   isVideoFileUrl,
   mediaIdentity,
   originalImageUrl,
+  resolveArchivePath,
   writeFileAtomic,
 } from '@/lib/archive-storage'
 import { renderArchiveHtml, renderArchiveMarkdown } from '@/lib/archive-render'
@@ -522,6 +523,14 @@ const store = globalThis as unknown as {
 }
 const inFlight = (store.siftlyArchiveInFlight ??= new Map())
 
+/** The bookmark was deleted from Siftly (e.g. while queued in a background run) */
+export class BookmarkNotFoundError extends Error {}
+
+/** True while this bookmark's archive is being written */
+export function isBookmarkArchiving(bookmarkId: string): boolean {
+  return inFlight.has(bookmarkId)
+}
+
 /** A fetcher using the X login from Settings → X Login (guest access without one) */
 export async function createXFetcher(fetchImpl?: FetchLike): Promise<XTweetFetcher> {
   return new XTweetFetcher({
@@ -553,7 +562,7 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
     where: { id: bookmarkId },
     include: { mediaItems: { select: { id: true, type: true, url: true, thumbnailUrl: true } } },
   })
-  if (!bookmark) throw new Error(`Bookmark not found: ${bookmarkId}`)
+  if (!bookmark) throw new BookmarkNotFoundError(`Bookmark not found: ${bookmarkId}`)
 
   try {
     const fetcher = options.fetcher === undefined ? await createXFetcher(options.fetchImpl) : options.fetcher
@@ -610,6 +619,16 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
       archivedAt: bookmark.archivedAt?.toISOString() ?? null,
     }
   }
+}
+
+/** Delete a tweet's folder from the local archive. False when it had none */
+export async function deleteArchiveFolder(tweetId: string, root?: string): Promise<boolean> {
+  const dir = resolveArchivePath(root ?? (await getArchiveRoot()), archiveFolderName(tweetId))
+  if (!dir) return false
+  const exists = await fs.stat(dir).then((s) => s.isDirectory(), () => false)
+  if (!exists) return false
+  await fs.rm(dir, { recursive: true, force: true })
+  return true
 }
 
 /** Read a bookmark's archive document from disk, or null if it was never archived */
@@ -770,7 +789,9 @@ async function runJob(mode: ArchiveMode, bookmarkIds?: string[]): Promise<void> 
             failed: j.state.failed + (result.status === 'failed' ? 1 : 0),
           }
         } catch (err) {
-          j.state = { ...j.state, done: j.state.done + 1, failed: j.state.failed + 1, error: err instanceof Error ? err.message : String(err) }
+          // Deleted while queued — it drops out of the run instead of counting as a failure
+          if (err instanceof BookmarkNotFoundError) j.state = { ...j.state, total: j.state.total - 1 }
+          else j.state = { ...j.state, done: j.state.done + 1, failed: j.state.failed + 1, error: err instanceof Error ? err.message : String(err) }
         }
       }
     }

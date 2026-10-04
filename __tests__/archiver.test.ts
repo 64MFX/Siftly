@@ -15,7 +15,7 @@ import {
 
 // buildArchive never touches the database; keep Prisma out of the test
 vi.mock('@/lib/db', () => ({ default: {}, prisma: {} }))
-const { buildArchive, waitForRateLimitReset } = await import('@/lib/archiver')
+const { buildArchive, deleteArchiveFolder, waitForRateLimitReset } = await import('@/lib/archiver')
 
 interface FakeNet {
   fetchImpl: FetchLike
@@ -228,6 +228,30 @@ describe('buildArchive', () => {
     expect(result.folder).not.toContain('..')
     expect((await stat(path.join(root, result.folder, 'archive.json'))).isFile()).toBe(true)
     expect(result.doc.text).toBe('hi')
+  })
+})
+
+describe('deleteArchiveFolder', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'siftly-archive-')) })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  it("removes only that tweet's folder", async () => {
+    const net = fakeNet({})
+    await buildArchive(bookmarkFrom('111', '{}', 'one'), [], deps(root, net, false))
+    await buildArchive(bookmarkFrom('222', '{}', 'two'), [], deps(root, net, false))
+
+    expect(await deleteArchiveFolder('111', root)).toBe(true)
+    expect(await readdir(root)).toEqual(['222'])
+    expect(await deleteArchiveFolder('111', root)).toBe(false)
+  })
+
+  it('stays inside the archive root for odd tweet IDs', async () => {
+    const net = fakeNet({})
+    const result = await buildArchive(bookmarkFrom('../../escape', '{}', 'hi'), [], deps(root, net, false))
+    expect(await deleteArchiveFolder('../../escape', root)).toBe(true)
+    expect(await readdir(root)).not.toContain(result.folder)
+    expect((await stat(root)).isDirectory()).toBe(true)
   })
 })
 

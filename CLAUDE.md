@@ -78,6 +78,7 @@ lib/
   rawjson-extractor.ts # Entity extraction from tweet JSON
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
+  bookmark-filters.ts # Shared Prisma where fragments (ARTICLE_WHERE = X Articles)
   archiver.ts         # Local archive orchestration + background download job (never runs on import)
   archive-location.ts # Archive folder (Setting `archiveDir` → SIFTLY_ARCHIVE_DIR → default), moving it
   tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
@@ -114,6 +115,7 @@ npx tsx cli/siftly.ts categories                     # Categories with counts
 npx tsx cli/siftly.ts search "AI agents"             # FTS5 keyword search
 npx tsx cli/siftly.ts list --limit 5                 # Recent bookmarks
 npx tsx cli/siftly.ts list --source like --category ai-resources --sort oldest
+npx tsx cli/siftly.ts list --media article           # X Articles only (also photo / video)
 npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
 npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
 npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
@@ -135,6 +137,8 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | X login for full X Articles | Settings → X Login, or `PUT /api/x-account` with `{"authToken","ct0"}`; status via `GET /api/x-account`. The archiver reads it with `getXCredentials()` |
 | Change archive folder | `PUT /api/archive` with `{"archiveDir":"/abs/path","moveFiles":true}` (`null` = default) |
 | Archive one bookmark | `POST /api/archive/<id or tweetId>`; read it back with `GET /api/archive/<id>` |
+| Filter X Articles | `GET /api/bookmarks?mediaType=article` (matches the stored `article` object or an `x.com/i/article/` link) |
+| Delete one bookmark | `DELETE /api/bookmarks/<id or tweetId>`; add `?deleteArchive=true` to remove its archive folder too. Siftly only — it stays bookmarked on X, so a later sync can re-add it |
 
 ## Database
 

@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import ThemeToggle from './theme-toggle'
+import type { BookmarkDeletedDetail } from './delete-bookmark-dialog'
 import {
   LayoutDashboard,
   Upload,
@@ -124,11 +125,20 @@ export default function Nav() {
       const { slug } = (e as CustomEvent<{ slug: string }>).detail
       setCategories((prev) => prev.filter((c) => c.slug !== slug))
     }
+    function handleBookmarkDeleted(e: Event) {
+      const { categorySlugs } = (e as CustomEvent<BookmarkDeletedDetail>).detail
+      setTotalBookmarks((n) => (n === null ? n : Math.max(0, n - 1)))
+      setCategories((prev) => prev.map((c) =>
+        categorySlugs.includes(c.slug) ? { ...c, bookmarkCount: Math.max(0, c.bookmarkCount - 1) } : c,
+      ))
+    }
     window.addEventListener('siftly:cleared', handleCleared)
     window.addEventListener('siftly:category-deleted', handleCategoryDeleted)
+    window.addEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
     return () => {
       window.removeEventListener('siftly:cleared', handleCleared)
       window.removeEventListener('siftly:category-deleted', handleCategoryDeleted)
+      window.removeEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
     }
   }, [])
 

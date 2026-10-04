@@ -62,6 +62,12 @@ export async function rebuildFts(): Promise<void> {
   }
 }
 
+/** Drop a deleted bookmark from the FTS5 table (no-op when it was never indexed) */
+export async function removeFromFts(bookmarkId: string): Promise<void> {
+  await ensureFtsTable()
+  await prisma.$executeRaw`DELETE FROM bookmark_fts WHERE bookmark_id = ${bookmarkId}`
+}
+
 /**
  * Search FTS5 table for bookmarks matching the given keywords.
  * Returns bookmark IDs ordered by relevance rank.
