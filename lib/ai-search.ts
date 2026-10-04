@@ -714,6 +714,7 @@ const HYDRATE_SELECT = {
   archivedAt: true,
   archiveStatus: true,
   linkCard: true,
+  readLaterAt: true,
   mediaItems: {
     select: { id: true, type: true, url: true, thumbnailUrl: true, imageTags: true, localPath: true, localThumbnailPath: true },
   },
@@ -741,6 +742,7 @@ function toResult(b: HydrateRow, aiScore: number, aiReason: string): AISearchBoo
     archivedAt: b.archivedAt?.toISOString() ?? null,
     archiveStatus: b.archiveStatus,
     linkCard: parseLinkCard(b.linkCard),
+    readLaterAt: b.readLaterAt?.toISOString() ?? null,
     mediaItems: b.mediaItems.map((m) => ({
       id: m.id,
       type: m.type,

@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useRef, useEffect, useState } from 'react'
-import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
+import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, BookOpen, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
 import type { BookmarkWithMedia, Category, LinkCard } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
 import ArchiveReader from '@/components/archive-reader'
@@ -629,13 +629,22 @@ function CategoryEditor({ bookmarkId, currentCategoryIds, onSave, onClose }: Cat
 
 // ── Main card ──────────────────────────────────────────────────────────────────
 
+/** Detail of the `siftly:read-later-changed` window event, sent when a card adds or removes one */
+export interface ReadLaterChangedDetail {
+  id: string
+  /** When it was added — null when it was taken off the list */
+  readLaterAt: string | null
+}
+
 interface BookmarkCardProps {
   bookmark: BookmarkWithMedia
   /** Called after the bookmark was deleted — the card hides itself either way */
   onDeleted?: (id: string) => void
+  /** Called after the bookmark was put on (readLaterAt set) or taken off (null) the Read Later list */
+  onReadLaterChange?: (id: string, readLaterAt: string | null) => void
 }
 
-export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps) {
+export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }: BookmarkCardProps) {
   const [categories, setCategories] = useState(bookmark.categories)
   const [expanded, setExpanded] = useState(false)
   const [editingCategories, setEditingCategories] = useState(false)
@@ -648,6 +657,8 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
   const [readerOpen, setReaderOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleted, setDeleted] = useState(false)
+  const [readLaterAt, setReadLaterAt] = useState(bookmark.readLaterAt ?? null)
+  const [readLaterSaving, setReadLaterSaving] = useState(false)
 
   const tweetUrl = (bookmark.authorHandle && bookmark.authorHandle !== 'unknown')
     ? `https://twitter.com/${bookmark.authorHandle}/status/${bookmark.tweetId}`
@@ -655,6 +666,7 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
   const firstMedia = mediaItems[0] ?? null
   const hasMedia = mediaItems.length > 0
   const isArchived = archivedAt !== null
+  const isReadLater = readLaterAt !== null
   const dateStr = formatDate(bookmark.tweetCreatedAt ?? bookmark.importedAt ?? null)
   const isKnownAuthor = bookmark.authorHandle !== 'unknown'
 
@@ -712,6 +724,30 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
       setArchiveMessage(err instanceof Error ? err.message : 'Archiving failed')
     } finally {
       setArchiving(false)
+    }
+  }
+
+  async function handleToggleReadLater() {
+    if (readLaterSaving) return
+    const previous = readLaterAt
+    // Fill / empty the icon right away; put it back if saving fails
+    setReadLaterAt(previous ? null : new Date().toISOString())
+    setReadLaterSaving(true)
+    try {
+      const res = await fetch(`/api/bookmarks/${encodeURIComponent(bookmark.id)}/read-later`, { method: previous ? 'DELETE' : 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      const saved: string | null = data.readLaterAt ?? null
+      setReadLaterAt(saved)
+      window.dispatchEvent(new CustomEvent<ReadLaterChangedDetail>('siftly:read-later-changed', {
+        detail: { id: bookmark.id, readLaterAt: saved },
+      }))
+      onReadLaterChange?.(bookmark.id, saved)
+    } catch (err) {
+      console.error('Read Later update failed:', err)
+      setReadLaterAt(previous)
+    } finally {
+      setReadLaterSaving(false)
     }
   }
 
@@ -829,47 +865,62 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
             </div>
           </div>
 
-          {/* Actions — visible on hover */}
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
-            <button
-              onClick={() => void handleArchive()}
-              disabled={archiving}
-              className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 disabled:opacity-60 transition-colors"
-              title={isArchived ? 'Update local copy from X' : 'Save a full local copy (text, images, video, article)'}
-            >
-              {archiving ? <Loader2 size={13} className="animate-spin" /> : <HardDriveDownload size={13} />}
-            </button>
-            <button
-              onClick={handleDownloadMarkdown}
-              className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-              title="Download as Markdown"
-            >
-              <FileText size={13} />
-            </button>
-            {isDownloadable && (
+          {/* Actions — visible on hover; Read Later stays visible (filled) while it's on the list */}
+          <div className="flex items-center gap-0.5 flex-shrink-0 mt-0.5">
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
-                onClick={handleDownload}
-                className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-                title="Download media"
+                onClick={() => void handleArchive()}
+                disabled={archiving}
+                className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 disabled:opacity-60 transition-colors"
+                title={isArchived ? 'Update local copy from X' : 'Save a full local copy (text, images, video, article)'}
               >
-                <Download size={13} />
+                {archiving ? <Loader2 size={13} className="animate-spin" /> : <HardDriveDownload size={13} />}
               </button>
-            )}
-            <a
-              href={tweetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-              title="Open on X"
-            >
-              <ExternalLink size={13} />
-            </a>
+              <button
+                onClick={handleDownloadMarkdown}
+                className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                title="Download as Markdown"
+              >
+                <FileText size={13} />
+              </button>
+              {isDownloadable && (
+                <button
+                  onClick={handleDownload}
+                  className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Download media"
+                >
+                  <Download size={13} />
+                </button>
+              )}
+              <a
+                href={tweetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                title="Open on X"
+              >
+                <ExternalLink size={13} />
+              </a>
+              <button
+                onClick={() => setDeleteOpen(true)}
+                className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                title="Delete from Siftly"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
             <button
-              onClick={() => setDeleteOpen(true)}
-              className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-              title="Delete from Siftly"
+              onClick={() => void handleToggleReadLater()}
+              aria-pressed={isReadLater}
+              aria-label={isReadLater ? 'Remove from Read Later' : 'Read later'}
+              className={`p-1.5 rounded-lg transition-all ${
+                isReadLater
+                  ? 'text-amber-500 hover:text-amber-400 hover:bg-amber-500/10'
+                  : 'text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 opacity-0 group-hover:opacity-100'
+              }`}
+              title={isReadLater ? 'In Read Later — click to remove' : 'Read later'}
             >
-              <Trash2 size={13} />
+              <BookOpen size={13} className={isReadLater ? 'fill-current' : undefined} />
             </button>
           </div>
         </div>

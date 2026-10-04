@@ -45,6 +45,8 @@ export interface BookmarkWithMedia {
   archiveStatus?: string | null
   /** What the post links to, once known (see lib/link-card.ts) */
   linkCard?: LinkCard | null
+  /** When it was put on the Read Later list — null/absent means it isn't on it */
+  readLaterAt?: string | null
   mediaItems: MediaItem[]
   categories: BookmarkCategory[]
 }

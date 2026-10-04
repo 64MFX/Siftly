@@ -25,6 +25,7 @@ model Bookmark {
   archiveStatus   String?   // "complete" | "partial" | "failed" — null means never archived
   archiveError    String?   // warnings from the last archive run (missing media, unreachable X, …)
   linkCard        String?   // JSON LinkCard: title/description/site/image of the page the post links to
+  readLaterAt     DateTime? // when it was put on the Read Later list — null means not on it
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
 
@@ -33,6 +34,7 @@ model Bookmark {
   @@index([enrichedAt])
   @@index([source])
   @@index([archiveStatus])
+  @@index([readLaterAt])
 }
 
 model Category {

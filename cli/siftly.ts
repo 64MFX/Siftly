@@ -5,6 +5,7 @@ import { loadSearchDocuments, searchIndex, syncSearchIndex } from '@/lib/search-
 import { aiSearch, fuseRankings } from '@/lib/ai-search'
 import { extractKeywords } from '@/lib/search-utils'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
+import { READ_LATER_WHERE, readLaterOrderBy, setReadLater } from '@/lib/read-later'
 import {
   archiveBookmark,
   archiveWhereForMode,
@@ -153,13 +154,18 @@ async function cmdList(args: string[]) {
   } else if (flags.media === 'article') {
     where.AND = [ARTICLE_WHERE]
   }
+  const readLater = flags['read-later'] === 'true'
+  if (readLater) {
+    Object.assign(where, READ_LATER_WHERE)
+  }
 
   const [bookmarks, total] = await Promise.all([
     prisma.bookmark.findMany({
       where,
       skip,
       take: limit,
-      orderBy: [{ tweetCreatedAt: sortDir }, { importedAt: sortDir }],
+      // The Read Later list is ordered by when each was added
+      orderBy: readLater ? readLaterOrderBy(sortDir) : [{ tweetCreatedAt: sortDir }, { importedAt: sortDir }],
       include: {
         mediaItems: { select: { id: true, type: true, url: true } },
         categories: {
@@ -213,6 +219,7 @@ async function cmdShow(args: string[]) {
     archiveDir: bookmark.archivedAt ? path.join(archiveRoot, archiveFolderName(bookmark.tweetId)) : null,
     archiveWarnings: bookmark.archiveError ? bookmark.archiveError.split('\n') : [],
     linkCard: safeParse(bookmark.linkCard),
+    readLaterAt: bookmark.readLaterAt?.toISOString() ?? null,
     semanticTags: safeParse(bookmark.semanticTags),
     entities: safeParse(bookmark.entities),
     enrichmentMeta: safeParse(bookmark.enrichmentMeta),
@@ -234,6 +241,16 @@ async function cmdShow(args: string[]) {
   })
 }
 
+async function cmdReadLater(args: string[]) {
+  const { positional, flags } = parseArgs(args)
+  const id = positional[0]
+  if (!id) die('Usage: siftly read-later <id|tweetId> [--remove]')
+
+  const state = await setReadLater(id, flags.remove !== 'true')
+  if (!state) die(`Bookmark not found: ${id}`)
+  output({ ...state, readLater: state.readLaterAt !== null })
+}
+
 async function cmdCategories() {
   const categories = await prisma.category.findMany({
     include: { _count: { select: { bookmarks: true } } },
@@ -253,13 +270,14 @@ async function cmdCategories() {
 }
 
 async function cmdStats() {
-  const [totalBookmarks, totalCategories, totalMedia, sourceGroups, enrichedCount] =
+  const [totalBookmarks, totalCategories, totalMedia, sourceGroups, enrichedCount, readLaterCount] =
     await Promise.all([
       prisma.bookmark.count(),
       prisma.category.count(),
       prisma.mediaItem.count(),
       prisma.bookmark.groupBy({ by: ['source'], _count: true }),
       prisma.bookmark.count({ where: { enrichedAt: { not: null } } }),
+      prisma.bookmark.count({ where: READ_LATER_WHERE }),
     ])
 
   const sources: Record<string, number> = {}
@@ -273,6 +291,7 @@ async function cmdStats() {
     unenrichedBookmarks: totalBookmarks - enrichedCount,
     totalCategories,
     totalMediaItems: totalMedia,
+    readLater: readLaterCount,
     sources,
   })
 }
@@ -355,6 +374,7 @@ function formatBookmark(b: any) {
     authorName: b.authorName,
     source: b.source,
     tweetCreatedAt: b.tweetCreatedAt?.toISOString() ?? null,
+    readLaterAt: b.readLaterAt?.toISOString() ?? null,
     mediaItems: b.mediaItems.map((m: { id: string; type: string; url: string }) => ({
       id: m.id,
       type: m.type,
@@ -375,8 +395,9 @@ function formatBookmark(b: any) {
 const COMMANDS: Record<string, string> = {
   search: 'search <query>           Keyword search over posts, quoted posts, links and full X Articles',
   'ai-search': 'ai-search <query> [--category <slug>]   AI search; questions get an answer citing the results',
-  list: 'list [--source] [--category] [--author] [--media photo|video|article] [--sort] [--limit] [--page]',
+  list: 'list [--source] [--category] [--author] [--media photo|video|article] [--read-later] [--sort] [--limit] [--page]',
   show: 'show <id|tweetId>         Full bookmark detail',
+  'read-later': 'read-later <id|tweetId> [--remove]   Put a bookmark on the Read Later list (or take it off)',
   categories: 'categories                List categories with counts',
   stats: 'stats                     Library statistics',
   archive: 'archive [--mode pending|retry|all] [--id <id|tweetId>] [--limit N] [--offline]   Save bookmarks locally',
@@ -410,6 +431,9 @@ async function main() {
         break
       case 'show':
         await cmdShow(rest)
+        break
+      case 'read-later':
+        await cmdReadLater(rest)
         break
       case 'categories':
         await cmdCategories()
