@@ -3,13 +3,13 @@
 import { useEffect, useCallback } from 'react'
 import { X } from 'lucide-react'
 import BookmarkCard from '@/components/bookmark-card'
-import type { BookmarkWithMedia } from '@/lib/types'
+import type { BookmarkWithMedia, ReadLaterState } from '@/lib/types'
 
 interface BookmarkDetailModalProps {
   bookmark: BookmarkWithMedia
   onClose: () => void
   onDeleted?: (id: string) => void
-  onReadLaterChange?: (id: string, readLaterAt: string | null) => void
+  onReadLaterChange?: (id: string, state: ReadLaterState) => void
 }
 
 export default function BookmarkDetailModal({ bookmark, onClose, onDeleted, onReadLaterChange }: BookmarkDetailModalProps) {

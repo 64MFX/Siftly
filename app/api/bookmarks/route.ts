@@ -44,6 +44,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const mediaType = searchParams.get('mediaType')?.trim() ?? ''
   const uncategorized = searchParams.get('uncategorized') === 'true'
   const readLater = searchParams.get('readLater') === 'true'
+  // Read Later folder: a folder id, or "none" for Unsorted
+  const readLaterFolder = searchParams.get('readLaterFolder')?.trim() ?? ''
   const sortParam = searchParams.get('sort')?.trim() ?? 'newest'
   const page = parseIntParam(searchParams.get('page'), DEFAULT_PAGE)
   const limit = Math.min(parseIntParam(searchParams.get('limit'), DEFAULT_LIMIT), MAX_LIMIT)
@@ -62,6 +64,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   if (readLater) {
     Object.assign(where, READ_LATER_WHERE)
+  }
+  if (readLaterFolder) {
+    where.readLaterFolderId = readLaterFolder === 'none' ? null : readLaterFolder
   }
 
   if (uncategorized) {
@@ -122,6 +127,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       archiveStatus: bookmark.archiveStatus,
       linkCard: parseLinkCard(bookmark.linkCard),
       readLaterAt: bookmark.readLaterAt?.toISOString() ?? null,
+      readLaterFolderId: bookmark.readLaterFolderId,
       mediaItems: bookmark.mediaItems.map((m) => ({
         id: m.id,
         type: m.type,

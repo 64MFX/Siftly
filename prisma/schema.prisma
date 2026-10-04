@@ -26,6 +26,8 @@ model Bookmark {
   archiveError    String?   // warnings from the last archive run (missing media, unreachable X, …)
   linkCard        String?   // JSON LinkCard: title/description/site/image of the page the post links to
   readLaterAt     DateTime? // when it was put on the Read Later list — null means not on it
+  readLaterFolderId String? // Read Later folder it's filed in (only while on the list) — null means Unsorted
+  readLaterFolder ReadLaterFolder? @relation(fields: [readLaterFolderId], references: [id], onDelete: SetNull)
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
 
@@ -35,6 +37,15 @@ model Bookmark {
   @@index([source])
   @@index([archiveStatus])
   @@index([readLaterAt])
+  @@index([readLaterFolderId])
+}
+
+/// The user's own folders for the Read Later list — separate from categories and the AI
+model ReadLaterFolder {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  createdAt DateTime   @default(now())
+  bookmarks Bookmark[]
 }
 
 model Category {

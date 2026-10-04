@@ -5,7 +5,18 @@ import { loadSearchDocuments, searchIndex, syncSearchIndex } from '@/lib/search-
 import { aiSearch, fuseRankings } from '@/lib/ai-search'
 import { extractKeywords } from '@/lib/search-utils'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
-import { READ_LATER_WHERE, readLaterOrderBy, setReadLater } from '@/lib/read-later'
+import {
+  READ_LATER_WHERE,
+  readLaterOrderBy,
+  setReadLater,
+  fileReadLater,
+  findReadLaterFolder,
+  listReadLaterFolders,
+  createReadLaterFolder,
+  renameReadLaterFolder,
+  deleteReadLaterFolder,
+  ReadLaterFolderError,
+} from '@/lib/read-later'
 import {
   archiveBookmark,
   archiveWhereForMode,
@@ -154,9 +165,12 @@ async function cmdList(args: string[]) {
   } else if (flags.media === 'article') {
     where.AND = [ARTICLE_WHERE]
   }
-  const readLater = flags['read-later'] === 'true'
+  const readLater = flags['read-later'] === 'true' || !!flags.folder
   if (readLater) {
     Object.assign(where, READ_LATER_WHERE)
+  }
+  if (flags.folder) {
+    where.readLaterFolderId = await folderIdFor(flags.folder)
   }
 
   const [bookmarks, total] = await Promise.all([
@@ -194,6 +208,7 @@ async function cmdShow(args: string[]) {
     where: { OR: [{ id }, { tweetId: id }] },
     include: {
       mediaItems: true,
+      readLaterFolder: { select: { id: true, name: true } },
       categories: {
         include: { category: { select: { id: true, name: true, slug: true, color: true } } },
         orderBy: { confidence: 'desc' },
@@ -220,6 +235,7 @@ async function cmdShow(args: string[]) {
     archiveWarnings: bookmark.archiveError ? bookmark.archiveError.split('\n') : [],
     linkCard: safeParse(bookmark.linkCard),
     readLaterAt: bookmark.readLaterAt?.toISOString() ?? null,
+    readLaterFolder: bookmark.readLaterFolder,
     semanticTags: safeParse(bookmark.semanticTags),
     entities: safeParse(bookmark.entities),
     enrichmentMeta: safeParse(bookmark.enrichmentMeta),
@@ -241,14 +257,49 @@ async function cmdShow(args: string[]) {
   })
 }
 
+/** A Read Later folder's id from its name or id; "none" = Unsorted (null) */
+async function folderIdFor(ref: string): Promise<string | null> {
+  if (ref === 'none') return null
+  const folder = await findReadLaterFolder(ref)
+  if (!folder) die(`Read Later folder not found: ${ref}`)
+  return folder.id
+}
+
 async function cmdReadLater(args: string[]) {
   const { positional, flags } = parseArgs(args)
   const id = positional[0]
-  if (!id) die('Usage: siftly read-later <id|tweetId> [--remove]')
+  if (!id) die('Usage: siftly read-later <id|tweetId> [--folder <name|id|none>] [--remove]')
 
-  const state = await setReadLater(id, flags.remove !== 'true')
+  const state = flags.remove === 'true'
+    ? await setReadLater(id, false)
+    : flags.folder
+      ? await fileReadLater(id, await folderIdFor(flags.folder))
+      : await setReadLater(id, true)
   if (!state) die(`Bookmark not found: ${id}`)
   output({ ...state, readLater: state.readLaterAt !== null })
+}
+
+async function cmdReadLaterFolders(args: string[]) {
+  const { flags } = parseArgs(args)
+  try {
+    if (flags.create) {
+      output({ created: await createReadLaterFolder(flags.create) })
+    } else if (flags.rename) {
+      if (!flags.to) die('Usage: siftly read-later-folders --rename <name|id> --to <new name>')
+      const folder = await findReadLaterFolder(flags.rename)
+      if (!folder) die(`Read Later folder not found: ${flags.rename}`)
+      output({ renamed: await renameReadLaterFolder(folder.id, flags.to) })
+    } else if (flags.delete) {
+      const folder = await findReadLaterFolder(flags.delete)
+      if (!folder) die(`Read Later folder not found: ${flags.delete}`)
+      output({ deleted: folder, movedToUnsorted: await deleteReadLaterFolder(folder.id) })
+    } else {
+      output(await listReadLaterFolders())
+    }
+  } catch (err) {
+    if (err instanceof ReadLaterFolderError) die(err.message)
+    throw err
+  }
 }
 
 async function cmdCategories() {
@@ -375,6 +426,7 @@ function formatBookmark(b: any) {
     source: b.source,
     tweetCreatedAt: b.tweetCreatedAt?.toISOString() ?? null,
     readLaterAt: b.readLaterAt?.toISOString() ?? null,
+    readLaterFolderId: b.readLaterFolderId,
     mediaItems: b.mediaItems.map((m: { id: string; type: string; url: string }) => ({
       id: m.id,
       type: m.type,
@@ -395,9 +447,10 @@ function formatBookmark(b: any) {
 const COMMANDS: Record<string, string> = {
   search: 'search <query>           Keyword search over posts, quoted posts, links and full X Articles',
   'ai-search': 'ai-search <query> [--category <slug>]   AI search; questions get an answer citing the results',
-  list: 'list [--source] [--category] [--author] [--media photo|video|article] [--read-later] [--sort] [--limit] [--page]',
+  list: 'list [--source] [--category] [--author] [--media photo|video|article] [--read-later] [--folder <name|id|none>] [--sort] [--limit] [--page]',
   show: 'show <id|tweetId>         Full bookmark detail',
-  'read-later': 'read-later <id|tweetId> [--remove]   Put a bookmark on the Read Later list (or take it off)',
+  'read-later': 'read-later <id|tweetId> [--folder <name|id|none>] [--remove]   Put a bookmark on the Read Later list (in a folder), or take it off',
+  'read-later-folders': 'read-later-folders [--create <name>] [--rename <name|id> --to <name>] [--delete <name|id>]   List or change Read Later folders',
   categories: 'categories                List categories with counts',
   stats: 'stats                     Library statistics',
   archive: 'archive [--mode pending|retry|all] [--id <id|tweetId>] [--limit N] [--offline]   Save bookmarks locally',
@@ -434,6 +487,9 @@ async function main() {
         break
       case 'read-later':
         await cmdReadLater(rest)
+        break
+      case 'read-later-folders':
+        await cmdReadLaterFolders(rest)
         break
       case 'categories':
         await cmdCategories()

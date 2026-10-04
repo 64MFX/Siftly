@@ -58,9 +58,10 @@ app/
     x-account/        # X login: GET status, PUT paste cookies, DELETE log out
       login/          # POST open the "Log in to X" browser window, DELETE cancel it
       files/[...path] # Serves archived files (Range support for video)
-    bookmarks/        # CRUD + filtering (?readLater=true = the Read Later list)
+    bookmarks/        # CRUD + filtering (?readLater=true = the Read Later list, &readLaterFolder=<id>|none)
       [id]/link-card/ # GET the post's link card (looked up and saved the first time)
-      [id]/read-later/ # POST add to / DELETE remove from Read Later
+      [id]/read-later/ # POST add to / PUT {folderId} file in a folder / DELETE remove from Read Later
+    read-later/folders/ # GET folders + counts, POST create; [id]/ PATCH rename, DELETE (bookmarks → Unsorted)
     categories/       # Category management
     mindmap/          # Graph data
     stats/            # Dashboard counts
@@ -86,7 +87,8 @@ lib/
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
   bookmark-filters.ts # Shared Prisma where fragments (ARTICLE_WHERE = X Articles)
-  read-later.ts       # Read Later list: setReadLater(), READ_LATER_WHERE, order by when added
+  read-later.ts       # Read Later list + the user's folders: setReadLater(), fileReadLater(), folder CRUD, READ_LATER_WHERE
+  read-later-client.ts # Browser side: useReadLaterFolders() store (folders + counts) and the calls that change them
   archiver.ts         # Local archive orchestration + background download job (never runs on import)
   archive-location.ts # Archive folder (Setting `archiveDir` → SIFTLY_ARCHIVE_DIR → default), moving it
   tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
@@ -98,7 +100,7 @@ lib/
   x-session.ts        # Saved X login (Settings x_auth_token / x_ct0 / x_account), verification, rejection tracking
   request-guard.ts    # Cross-site request check for routes that handle the X login
 
-prisma/schema.prisma  # SQLite schema (Bookmark, Category, MediaItem, Setting, ImportJob)
+prisma/schema.prisma  # SQLite schema (Bookmark, Category, MediaItem, ReadLaterFolder, Setting, ImportJob)
 ```
 
 ## Tech Stack
@@ -125,8 +127,9 @@ npx tsx cli/siftly.ts ai-search "how do people fine-tune small models?"  # AI se
 npx tsx cli/siftly.ts list --limit 5                 # Recent bookmarks
 npx tsx cli/siftly.ts list --source like --category ai-resources --sort oldest
 npx tsx cli/siftly.ts list --media article           # X Articles only (also photo / video)
-npx tsx cli/siftly.ts list --read-later              # Read Later list, most recently added first
-npx tsx cli/siftly.ts read-later <id|tweetId>        # Put on Read Later (--remove takes it off)
+npx tsx cli/siftly.ts list --read-later              # Read Later list, most recently added first (--folder <name|none>)
+npx tsx cli/siftly.ts read-later <id|tweetId>        # Put on Read Later (--folder <name|none> files it, --remove takes it off)
+npx tsx cli/siftly.ts read-later-folders             # Read Later folders with counts (--create, --rename … --to, --delete)
 npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
 npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
 npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
@@ -153,14 +156,15 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | AI search | `POST /api/search/ai` with `{"query"}` → ranked bookmarks with `aiReason`, plus `answer` (citing results as [1], [2]…) for questions. `GET /api/search/ai` = index stats (how many X Articles are readable in full) |
 | Change what search can read | `buildSearchDocument` / `buildSearchRow` in `lib/search-document.ts`; bump `SEARCH_DOC_VERSION` so every bookmark is re-indexed |
 | Link-only posts | `Bookmark.linkCard` (JSON) holds the linked page's card; cards show it, the categorizer and tag enrichment read it (`link` field). Filled by the archiver, the AI pipeline and `GET /api/bookmarks/<id>/link-card` via `resolveLinkCard()` |
-| Read Later | `POST /api/bookmarks/<id or tweetId>/read-later` adds, `DELETE` removes (sets / clears `Bookmark.readLaterAt`); `GET /api/bookmarks?readLater=true` lists them by when they were added. Separate from categories. Cards toggle it with the book icon and fire `siftly:read-later-changed` |
+| Read Later | `POST /api/bookmarks/<id or tweetId>/read-later` adds, `DELETE` removes (sets / clears `Bookmark.readLaterAt`, and clears its folder); `GET /api/bookmarks?readLater=true` lists them by when they were added. Separate from categories. Cards toggle it with the book icon and fire `siftly:read-later-changed` |
+| Read Later folders | The user's own folders (`ReadLaterFolder`), separate from categories and the AI; a bookmark is in at most one (`Bookmark.readLaterFolderId`, null = Unsorted). `PUT /api/bookmarks/<id>/read-later` with `{"folderId"}` files it (adds it to the list if needed); `/api/read-later/folders` to list / create / rename / delete — deleting leaves its bookmarks in Unsorted. Shown as tabs on `/read-later` (`?folder=<id>`/`none`) and as a folder chip + picker on cards |
 | Delete one bookmark | `DELETE /api/bookmarks/<id or tweetId>`; add `?deleteArchive=true` to remove its archive folder too. Siftly only — it stays bookmarked on X, so a later sync can re-add it |
 
 ## Database
 
 SQLite at `prisma/dev.db`. After schema changes: `npx prisma db push`
 
-Models: `Bookmark`, `MediaItem`, `BookmarkCategory`, `Category`, `Setting`, `ImportJob` — see `prisma/schema.prisma` for details.
+Models: `Bookmark`, `MediaItem`, `BookmarkCategory`, `Category`, `ReadLaterFolder`, `Setting`, `ImportJob` — see `prisma/schema.prisma` for details.
 
 The search index is two runtime-managed tables (not in the Prisma schema): `bookmark_search_doc` (extracted content per bookmark) and FTS5 `bookmark_search_fts`. `syncSearchIndex()` indexes new bookmarks before every search; the archiver re-indexes a bookmark after saving it (so archived X Articles become searchable in full), and the AI pipeline / image analysis call `refreshSearchRows()`.
 

@@ -1,11 +1,13 @@
 'use client'
 
 import React, { useRef, useEffect, useState } from 'react'
-import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, BookOpen, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
-import type { BookmarkWithMedia, Category, LinkCard } from '@/lib/types'
+import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, BookOpen, Folder, FolderInput, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
+import type { BookmarkWithMedia, Category, LinkCard, ReadLaterState } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
+import { fileReadLater, setReadLater, useReadLaterFolders } from '@/lib/read-later-client'
 import ArchiveReader from '@/components/archive-reader'
 import DeleteBookmarkDialog from '@/components/delete-bookmark-dialog'
+import { ReadLaterFolderPicker } from '@/components/read-later-folders'
 
 // ── URL helpers ────────────────────────────────────────────────────────────────
 
@@ -629,19 +631,12 @@ function CategoryEditor({ bookmarkId, currentCategoryIds, onSave, onClose }: Cat
 
 // ── Main card ──────────────────────────────────────────────────────────────────
 
-/** Detail of the `siftly:read-later-changed` window event, sent when a card adds or removes one */
-export interface ReadLaterChangedDetail {
-  id: string
-  /** When it was added — null when it was taken off the list */
-  readLaterAt: string | null
-}
-
 interface BookmarkCardProps {
   bookmark: BookmarkWithMedia
   /** Called after the bookmark was deleted — the card hides itself either way */
   onDeleted?: (id: string) => void
-  /** Called after the bookmark was put on (readLaterAt set) or taken off (null) the Read Later list */
-  onReadLaterChange?: (id: string, readLaterAt: string | null) => void
+  /** Called after the bookmark was put on or taken off the Read Later list, or moved to another folder */
+  onReadLaterChange?: (id: string, state: ReadLaterState) => void
 }
 
 export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }: BookmarkCardProps) {
@@ -658,7 +653,10 @@ export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }:
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleted, setDeleted] = useState(false)
   const [readLaterAt, setReadLaterAt] = useState(bookmark.readLaterAt ?? null)
+  const [readLaterFolderId, setReadLaterFolderId] = useState(bookmark.readLaterFolderId ?? null)
   const [readLaterSaving, setReadLaterSaving] = useState(false)
+  const [pickingFolder, setPickingFolder] = useState(false)
+  const { folders: readLaterFolders } = useReadLaterFolders()
 
   const tweetUrl = (bookmark.authorHandle && bookmark.authorHandle !== 'unknown')
     ? `https://twitter.com/${bookmark.authorHandle}/status/${bookmark.tweetId}`
@@ -667,6 +665,7 @@ export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }:
   const hasMedia = mediaItems.length > 0
   const isArchived = archivedAt !== null
   const isReadLater = readLaterAt !== null
+  const readLaterFolder = isReadLater ? readLaterFolders.find((f) => f.id === readLaterFolderId) ?? null : null
   const dateStr = formatDate(bookmark.tweetCreatedAt ?? bookmark.importedAt ?? null)
   const isKnownAuthor = bookmark.authorHandle !== 'unknown'
 
@@ -729,26 +728,51 @@ export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }:
 
   async function handleToggleReadLater() {
     if (readLaterSaving) return
-    const previous = readLaterAt
+    const previous = { readLaterAt, readLaterFolderId }
     // Fill / empty the icon right away; put it back if saving fails
-    setReadLaterAt(previous ? null : new Date().toISOString())
+    setReadLaterAt(previous.readLaterAt ? null : new Date().toISOString())
+    if (previous.readLaterAt) {
+      setReadLaterFolderId(null)
+      setPickingFolder(false)
+    }
     setReadLaterSaving(true)
     try {
-      const res = await fetch(`/api/bookmarks/${encodeURIComponent(bookmark.id)}/read-later`, { method: previous ? 'DELETE' : 'POST' })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      const saved: string | null = data.readLaterAt ?? null
-      setReadLaterAt(saved)
-      window.dispatchEvent(new CustomEvent<ReadLaterChangedDetail>('siftly:read-later-changed', {
-        detail: { id: bookmark.id, readLaterAt: saved },
-      }))
-      onReadLaterChange?.(bookmark.id, saved)
+      const state = await setReadLater(bookmark.id, !previous.readLaterAt)
+      setReadLaterAt(state.readLaterAt)
+      setReadLaterFolderId(state.readLaterFolderId)
+      onReadLaterChange?.(bookmark.id, state)
     } catch (err) {
       console.error('Read Later update failed:', err)
-      setReadLaterAt(previous)
+      setReadLaterAt(previous.readLaterAt)
+      setReadLaterFolderId(previous.readLaterFolderId)
     } finally {
       setReadLaterSaving(false)
     }
+  }
+
+  async function handleMoveToFolder(folderId: string | null) {
+    setPickingFolder(false)
+    if (readLaterSaving || folderId === (readLaterFolder?.id ?? null)) return
+    const previous = readLaterFolderId
+    setReadLaterFolderId(folderId)
+    setReadLaterSaving(true)
+    try {
+      const state = await fileReadLater(bookmark.id, folderId)
+      setReadLaterAt(state.readLaterAt)
+      setReadLaterFolderId(state.readLaterFolderId)
+      onReadLaterChange?.(bookmark.id, state)
+    } catch (err) {
+      console.error('Moving to a Read Later folder failed:', err)
+      setReadLaterFolderId(previous)
+    } finally {
+      setReadLaterSaving(false)
+    }
+  }
+
+  function togglePicker(e: React.MouseEvent) {
+    e.stopPropagation()
+    setEditingCategories(false)
+    setPickingFolder((v) => !v)
   }
 
   function handleDownload() {
@@ -967,6 +991,17 @@ export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }:
         <div className="relative mt-auto pt-3 border-t border-zinc-800/50">
           {/* Row 1: chips + date — consistent height across all cards */}
           <div className="flex items-center gap-1.5 flex-wrap min-h-[1.5rem]">
+            {readLaterFolder && (
+              <button
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={togglePicker}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/25 hover:bg-amber-500/20 transition-colors max-w-[11rem]"
+                title="Read Later folder — click to move it"
+              >
+                <Folder size={10} className="shrink-0 fill-current" />
+                <span className="truncate">{readLaterFolder.name}</span>
+              </button>
+            )}
             {categories.map((cat) => (
               <CategoryChip key={cat.id} category={cat} onRemove={handleRemoveCategory} />
             ))}
@@ -1003,17 +1038,36 @@ export default function BookmarkCard({ bookmark, onDeleted, onReadLaterChange }:
             </p>
           )}
 
-          {/* Row 2: edit button — always in DOM to reserve space; invisible until hover */}
-          <div className="mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Row 2: edit buttons — always in DOM to reserve space; invisible until hover */}
+          <div className="mt-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
-              onClick={() => setEditingCategories((v) => !v)}
+              onClick={() => { setPickingFolder(false); setEditingCategories((v) => !v) }}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs text-zinc-700 hover:text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700 transition-all"
               title="Edit categories"
             >
               <Pencil size={10} />
               edit
             </button>
+            {isReadLater && (
+              <button
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={togglePicker}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs text-zinc-700 hover:text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700 transition-all"
+                title="Move to a Read Later folder"
+              >
+                <FolderInput size={10} />
+                folder
+              </button>
+            )}
           </div>
+
+          {pickingFolder && isReadLater && (
+            <ReadLaterFolderPicker
+              folderId={readLaterFolder?.id ?? null}
+              onSelect={(folderId) => void handleMoveToFolder(folderId)}
+              onClose={() => setPickingFolder(false)}
+            />
+          )}
 
           {editingCategories && (
             <CategoryEditor

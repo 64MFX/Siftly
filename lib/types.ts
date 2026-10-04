@@ -47,8 +47,39 @@ export interface BookmarkWithMedia {
   linkCard?: LinkCard | null
   /** When it was put on the Read Later list — null/absent means it isn't on it */
   readLaterAt?: string | null
+  /** Read Later folder it's filed in — null/absent means Unsorted */
+  readLaterFolderId?: string | null
   mediaItems: MediaItem[]
   categories: BookmarkCategory[]
+}
+
+/** A bookmark's place on the Read Later list */
+export interface ReadLaterState {
+  id: string
+  tweetId: string
+  /** ISO time it was added, null when it is not on the list */
+  readLaterAt: string | null
+  /** Folder it's filed in, null when Unsorted (or not on the list) */
+  readLaterFolderId: string | null
+}
+
+/** Longest Read Later folder name */
+export const READ_LATER_FOLDER_NAME_MAX = 40
+
+/** One of the user's own Read Later folders — separate from categories */
+export interface ReadLaterFolder {
+  id: string
+  name: string
+  /** Bookmarks filed in it */
+  count: number
+}
+
+export interface ReadLaterFolders {
+  /** Bookmarks on the Read Later list */
+  total: number
+  /** Of those, not filed in a folder */
+  unsorted: number
+  folders: ReadLaterFolder[]
 }
 
 export interface Category {

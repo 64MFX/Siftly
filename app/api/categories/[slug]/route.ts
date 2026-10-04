@@ -80,6 +80,7 @@ export async function GET(request: NextRequest, context: RouteContext): Promise<
       archiveStatus: bookmark.archiveStatus,
       linkCard: parseLinkCard(bookmark.linkCard),
       readLaterAt: bookmark.readLaterAt?.toISOString() ?? null,
+      readLaterFolderId: bookmark.readLaterFolderId,
       mediaItems: bookmark.mediaItems.map((m) => ({
         id: m.id,
         type: m.type,
