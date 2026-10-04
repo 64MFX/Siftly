@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import ThemeToggle from './theme-toggle'
 import type { BookmarkDeletedDetail } from './delete-bookmark-dialog'
+import type { CategoryUpdatedDetail } from './edit-category-dialog'
 import {
   LayoutDashboard,
   Upload,
@@ -125,6 +126,12 @@ export default function Nav() {
       const { slug } = (e as CustomEvent<{ slug: string }>).detail
       setCategories((prev) => prev.filter((c) => c.slug !== slug))
     }
+    function handleCategoryUpdated(e: Event) {
+      const { category } = (e as CustomEvent<CategoryUpdatedDetail>).detail
+      setCategories((prev) => prev.map((c) =>
+        c.slug === category.slug ? { ...c, name: category.name, color: category.color } : c,
+      ))
+    }
     function handleBookmarkDeleted(e: Event) {
       const { categorySlugs } = (e as CustomEvent<BookmarkDeletedDetail>).detail
       setTotalBookmarks((n) => (n === null ? n : Math.max(0, n - 1)))
@@ -134,10 +141,12 @@ export default function Nav() {
     }
     window.addEventListener('siftly:cleared', handleCleared)
     window.addEventListener('siftly:category-deleted', handleCategoryDeleted)
+    window.addEventListener('siftly:category-updated', handleCategoryUpdated)
     window.addEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
     return () => {
       window.removeEventListener('siftly:cleared', handleCleared)
       window.removeEventListener('siftly:category-deleted', handleCategoryDeleted)
+      window.removeEventListener('siftly:category-updated', handleCategoryUpdated)
       window.removeEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
     }
   }, [])

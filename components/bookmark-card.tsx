@@ -197,9 +197,11 @@ let cachedCategories: Category[] | null = null
 let cacheFetchPromise: Promise<Category[]> | null = null
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('siftly:category-deleted', () => {
+  const clearCache = () => {
     cachedCategories = null
-  })
+  }
+  window.addEventListener('siftly:category-deleted', clearCache)
+  window.addEventListener('siftly:category-updated', clearCache)
 }
 
 async function fetchAllCategories(): Promise<Category[]> {

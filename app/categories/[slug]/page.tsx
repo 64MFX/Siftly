@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { ChevronLeft, ChevronRight, Download, ArrowLeft, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, ArrowLeft, Trash2, Pencil } from 'lucide-react'
 import BookmarkCard from '@/components/bookmark-card'
 import DeleteCategoryDialog from '@/components/delete-category-dialog'
+import EditCategoryDialog from '@/components/edit-category-dialog'
 import type { BookmarkWithMedia, Category } from '@/lib/types'
 
 const PAGE_SIZE = 24
@@ -56,6 +57,7 @@ export default function CategoryPage() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   const fetchData = useCallback(async (p: number) => {
     setLoading(true)
@@ -88,6 +90,19 @@ export default function CategoryPage() {
   useEffect(() => {
     fetchData(page)
   }, [fetchData, page])
+
+  function handleUpdated(updated: Category) {
+    setData((prev) => prev && {
+      ...prev,
+      category: { ...prev.category, ...updated },
+      bookmarks: prev.bookmarks.map((b) => ({
+        ...b,
+        categories: b.categories.map((c) =>
+          c.id === updated.id ? { ...c, name: updated.name, color: updated.color } : c,
+        ),
+      })),
+    })
+  }
 
   function handleExport() {
     window.location.href = `/api/export?type=zip&category=${slug}`
@@ -144,6 +159,13 @@ export default function CategoryPage() {
               Export ZIP
             </button>
             <button
+              onClick={() => setEditOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+            >
+              <Pencil size={15} />
+              Edit
+            </button>
+            <button
               onClick={() => setDeleteOpen(true)}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-red-500/10 text-zinc-300 hover:text-red-400 text-sm font-medium transition-colors"
             >
@@ -152,6 +174,15 @@ export default function CategoryPage() {
             </button>
           </div>
         </div>
+      )}
+
+      {category && editOpen && (
+        <EditCategoryDialog
+          category={category}
+          open
+          onClose={() => setEditOpen(false)}
+          onSaved={handleUpdated}
+        />
       )}
 
       {category && (

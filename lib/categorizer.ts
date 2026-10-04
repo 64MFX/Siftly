@@ -136,11 +136,14 @@ interface CategorizationResult {
 }
 
 export async function seedDefaultCategories(): Promise<void> {
-  const existing = await prisma.category.findMany({ select: { slug: true } })
-  const existingSlugs = new Set(existing.map((c) => c.slug))
+  const existing = await prisma.category.findMany({ select: { slug: true, userEdited: true } })
+  const existingBySlug = new Map(existing.map((c) => [c.slug, c]))
 
   for (const cat of DEFAULT_CATEGORIES) {
-    if (existingSlugs.has(cat.slug)) {
+    const current = existingBySlug.get(cat.slug)
+    if (current) {
+      // Keep the user's own name, color and description
+      if (current.userEdited) continue
       // Sync name, color, and description so renames/updates propagate to existing DBs
       await prisma.category.update({
         where: { slug: cat.slug },

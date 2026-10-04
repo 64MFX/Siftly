@@ -130,6 +130,7 @@ npm run siftly -- stats                              # Alternative via npm scrip
 |------|-----|
 | Run AI pipeline | `POST /api/categorize` with `{}` body; `GET /api/categorize` for SSE progress |
 | Add category | Edit `DEFAULT_CATEGORIES` in `lib/categorizer.ts` — description is passed verbatim to Claude |
+| Rename / re-describe a category | `PATCH /api/categories/<slug>` with any of `{"name","description","color"}`. Slug stays the same; sets `userEdited` so default seeding won't overwrite it |
 | Add known tool | Append domain to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` |
 | Test API auth | `POST /api/settings/test` with `{"provider":"anthropic"}` |
 | Check CLI auth | `GET /api/settings/cli-status` |
