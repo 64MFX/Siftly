@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ThemeToggle from './theme-toggle'
 import type { BookmarkDeletedDetail } from './delete-bookmark-dialog'
 import type { CategoryUpdatedDetail } from './edit-category-dialog'
@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Command,
   Bookmark,
+  BookOpen,
 } from 'lucide-react'
 
 interface NavItem {
@@ -29,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/ai-search', label: 'AI Search', icon: Sparkles },
   { href: '/bookmarks', label: 'Browse', icon: Search },
+  { href: '/read-later', label: 'Read Later', icon: BookOpen },
   { href: '/mindmap', label: 'Mindmap', icon: GitBranch },
   { href: '/import', label: 'Import', icon: Upload },
   { href: '/settings', label: 'Settings', icon: Settings },
@@ -104,6 +106,8 @@ export default function Nav() {
     return localStorage.getItem('nav-collections-open') !== 'false'
   })
   const [pipeline, setPipeline] = useState<PipelineStatus | null>(null)
+  const [readLaterCount, setReadLaterCount] = useState<number | null>(null)
+  const readLaterRequest = useRef(0)
 
   function toggleCollections() {
     setCollectionsOpen((v) => {
@@ -118,9 +122,20 @@ export default function Nav() {
   }
 
   useEffect(() => {
+    // Recount the Read Later list; only the latest of overlapping requests counts
+    function refreshReadLaterCount() {
+      const request = ++readLaterRequest.current
+      fetch('/api/bookmarks?readLater=true&limit=1')
+        .then((r) => r.json())
+        .then((d: { total?: number }) => {
+          if (request === readLaterRequest.current && typeof d.total === 'number') setReadLaterCount(d.total)
+        })
+        .catch(() => {})
+    }
     function handleCleared() {
       setCategories([])
       setTotalBookmarks(0)
+      setReadLaterCount(0)
     }
     function handleCategoryDeleted(e: Event) {
       const { slug } = (e as CustomEvent<{ slug: string }>).detail
@@ -138,16 +153,20 @@ export default function Nav() {
       setCategories((prev) => prev.map((c) =>
         categorySlugs.includes(c.slug) ? { ...c, bookmarkCount: Math.max(0, c.bookmarkCount - 1) } : c,
       ))
+      refreshReadLaterCount()
     }
     window.addEventListener('siftly:cleared', handleCleared)
     window.addEventListener('siftly:category-deleted', handleCategoryDeleted)
     window.addEventListener('siftly:category-updated', handleCategoryUpdated)
     window.addEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
+    window.addEventListener('siftly:read-later-changed', refreshReadLaterCount)
+    refreshReadLaterCount()
     return () => {
       window.removeEventListener('siftly:cleared', handleCleared)
       window.removeEventListener('siftly:category-deleted', handleCategoryDeleted)
       window.removeEventListener('siftly:category-updated', handleCategoryUpdated)
       window.removeEventListener('siftly:bookmark-deleted', handleBookmarkDeleted)
+      window.removeEventListener('siftly:read-later-changed', refreshReadLaterCount)
     }
   }, [])
 
@@ -243,7 +262,10 @@ export default function Nav() {
               }`}
             >
               <Icon size={14} className="shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {href === '/read-later' && !!readLaterCount && (
+                <span className="text-[11px] text-zinc-600 tabular-nums font-normal">{readLaterCount}</span>
+              )}
             </Link>
           )
         })}

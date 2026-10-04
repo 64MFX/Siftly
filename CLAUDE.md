@@ -58,8 +58,9 @@ app/
     x-account/        # X login: GET status, PUT paste cookies, DELETE log out
       login/          # POST open the "Log in to X" browser window, DELETE cancel it
       files/[...path] # Serves archived files (Range support for video)
-    bookmarks/        # CRUD + filtering
+    bookmarks/        # CRUD + filtering (?readLater=true = the Read Later list)
       [id]/link-card/ # GET the post's link card (looked up and saved the first time)
+      [id]/read-later/ # POST add to / DELETE remove from Read Later
     categories/       # Category management
     mindmap/          # Graph data
     stats/            # Dashboard counts
@@ -67,7 +68,8 @@ app/
   mindmap/            # Interactive force graph
   settings/           # API keys, model selection
   ai-search/          # Natural language search UI
-  bookmarks/          # Browse + filter UI
+  bookmarks/          # Browse + filter UI (components/bookmark-browser.tsx)
+  read-later/         # Read Later list (same browser, readLater mode)
   categorize/         # Pipeline monitor
 
 lib/
@@ -84,6 +86,7 @@ lib/
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
   bookmark-filters.ts # Shared Prisma where fragments (ARTICLE_WHERE = X Articles)
+  read-later.ts       # Read Later list: setReadLater(), READ_LATER_WHERE, order by when added
   archiver.ts         # Local archive orchestration + background download job (never runs on import)
   archive-location.ts # Archive folder (Setting `archiveDir` → SIFTLY_ARCHIVE_DIR → default), moving it
   tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
@@ -122,6 +125,8 @@ npx tsx cli/siftly.ts ai-search "how do people fine-tune small models?"  # AI se
 npx tsx cli/siftly.ts list --limit 5                 # Recent bookmarks
 npx tsx cli/siftly.ts list --source like --category ai-resources --sort oldest
 npx tsx cli/siftly.ts list --media article           # X Articles only (also photo / video)
+npx tsx cli/siftly.ts list --read-later              # Read Later list, most recently added first
+npx tsx cli/siftly.ts read-later <id|tweetId>        # Put on Read Later (--remove takes it off)
 npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
 npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
 npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
@@ -148,6 +153,7 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | AI search | `POST /api/search/ai` with `{"query"}` → ranked bookmarks with `aiReason`, plus `answer` (citing results as [1], [2]…) for questions. `GET /api/search/ai` = index stats (how many X Articles are readable in full) |
 | Change what search can read | `buildSearchDocument` / `buildSearchRow` in `lib/search-document.ts`; bump `SEARCH_DOC_VERSION` so every bookmark is re-indexed |
 | Link-only posts | `Bookmark.linkCard` (JSON) holds the linked page's card; cards show it, the categorizer and tag enrichment read it (`link` field). Filled by the archiver, the AI pipeline and `GET /api/bookmarks/<id>/link-card` via `resolveLinkCard()` |
+| Read Later | `POST /api/bookmarks/<id or tweetId>/read-later` adds, `DELETE` removes (sets / clears `Bookmark.readLaterAt`); `GET /api/bookmarks?readLater=true` lists them by when they were added. Separate from categories. Cards toggle it with the book icon and fire `siftly:read-later-changed` |
 | Delete one bookmark | `DELETE /api/bookmarks/<id or tweetId>`; add `?deleteArchive=true` to remove its archive folder too. Siftly only — it stays bookmarked on X, so a later sync can re-add it |
 
 ## Database

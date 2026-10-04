@@ -3,6 +3,7 @@ import prisma from '@/lib/db'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
 import { clearSearchIndex } from '@/lib/search-index'
 import { parseLinkCard } from '@/lib/link-card'
+import { READ_LATER_WHERE, readLaterOrderBy } from '@/lib/read-later'
 
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 24
@@ -42,6 +43,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const categorySlug = searchParams.get('category')?.trim() ?? ''
   const mediaType = searchParams.get('mediaType')?.trim() ?? ''
   const uncategorized = searchParams.get('uncategorized') === 'true'
+  const readLater = searchParams.get('readLater') === 'true'
   const sortParam = searchParams.get('sort')?.trim() ?? 'newest'
   const page = parseIntParam(searchParams.get('page'), DEFAULT_PAGE)
   const limit = Math.min(parseIntParam(searchParams.get('limit'), DEFAULT_LIMIT), MAX_LIMIT)
@@ -56,6 +58,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   if (q) {
     where.text = { contains: q }
+  }
+
+  if (readLater) {
+    Object.assign(where, READ_LATER_WHERE)
   }
 
   if (uncategorized) {
@@ -82,7 +88,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         where,
         skip,
         take: limit,
-        orderBy: [{ tweetCreatedAt: orderDir }, { importedAt: orderDir }],
+        // The Read Later list is ordered by when each was added
+        orderBy: readLater ? readLaterOrderBy(orderDir) : [{ tweetCreatedAt: orderDir }, { importedAt: orderDir }],
         include: {
           mediaItems: true,
           categories: {
@@ -114,6 +121,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       archivedAt: bookmark.archivedAt?.toISOString() ?? null,
       archiveStatus: bookmark.archiveStatus,
       linkCard: parseLinkCard(bookmark.linkCard),
+      readLaterAt: bookmark.readLaterAt?.toISOString() ?? null,
       mediaItems: bookmark.mediaItems.map((m) => ({
         id: m.id,
         type: m.type,

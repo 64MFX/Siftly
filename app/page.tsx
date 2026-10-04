@@ -57,6 +57,7 @@ function buildDashboardData(result: QueryResult) {
     archivedAt: b.archivedAt?.toISOString() ?? null,
     archiveStatus: b.archiveStatus,
     linkCard: parseLinkCard(b.linkCard),
+    readLaterAt: b.readLaterAt?.toISOString() ?? null,
     mediaItems: b.mediaItems,
     categories: b.categories.map((bc) => ({
       id: bc.category.id,

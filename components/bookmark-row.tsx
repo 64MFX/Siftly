@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Globe, Image, Play } from 'lucide-react'
+import { BookOpen, Globe, Image, Play } from 'lucide-react'
 import type { BookmarkWithMedia } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
 
@@ -174,6 +174,13 @@ export default function BookmarkRow({ bookmark, onClick }: BookmarkRowProps) {
           </span>
         ) : <span className="text-zinc-600 italic">No text</span>)}
       </p>
+
+      {/* On the Read Later list */}
+      {bookmark.readLaterAt && (
+        <span className="shrink-0" title="In Read Later">
+          <BookOpen size={12} className="text-amber-500 fill-current" aria-label="In Read Later" />
+        </span>
+      )}
 
       {/* Category dots */}
       {bookmark.categories.length > 0 && (

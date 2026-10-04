@@ -9,9 +9,10 @@ interface BookmarkDetailModalProps {
   bookmark: BookmarkWithMedia
   onClose: () => void
   onDeleted?: (id: string) => void
+  onReadLaterChange?: (id: string, readLaterAt: string | null) => void
 }
 
-export default function BookmarkDetailModal({ bookmark, onClose, onDeleted }: BookmarkDetailModalProps) {
+export default function BookmarkDetailModal({ bookmark, onClose, onDeleted, onReadLaterChange }: BookmarkDetailModalProps) {
   const handleEscape = useCallback((e: KeyboardEvent) => {
     // A dialog opened from the card (e.g. delete) already handled this Escape
     if (e.key === 'Escape' && !e.defaultPrevented) onClose()
@@ -47,7 +48,7 @@ export default function BookmarkDetailModal({ bookmark, onClose, onDeleted }: Bo
         >
           <X size={18} />
         </button>
-        <BookmarkCard bookmark={bookmark} onDeleted={handleDeleted} />
+        <BookmarkCard bookmark={bookmark} onDeleted={handleDeleted} onReadLaterChange={onReadLaterChange} />
       </div>
     </div>
   )

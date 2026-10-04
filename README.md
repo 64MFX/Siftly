@@ -210,6 +210,12 @@ Interactive force-directed graph showing all bookmarks organized by category:
 - Active filter chips — removable individually or all at once
 - Hover any card to download media or jump to the original tweet
 
+### 📖 Read Later
+
+- Hover a card and click the **book icon** in its top-right corner to set it aside; the icon fills in (and stays visible) while it's on the list
+- Click it again to take it off — Read Later is separate from categories
+- **Read Later** in the sidebar lists them, most recently added first, with the same search, filters and views as Browse
+
 ### 💾 Local Archive
 
 Tweets get deleted, accounts get suspended, articles get pulled. The local archive saves a complete copy of every bookmark to disk so it stays readable when the original is gone:
@@ -311,7 +317,8 @@ siftly/
 │   ├── api/
 │   │   ├── analyze/images/   # Batch image vision analysis (GET progress, POST run)
 │   │   ├── bookmarks/        # List, filter, paginate, delete
-│   │   │   └── [id]/categories/ # Per-bookmark category management
+│   │   │   ├── [id]/categories/ # Per-bookmark category management
+│   │   │   └── [id]/read-later/ # Add to (POST) / remove from (DELETE) Read Later
 │   │   ├── categories/       # Category CRUD
 │   │   │   └── [slug]/       # Individual category operations
 │   │   ├── categorize/       # 4-stage AI pipeline (start, status, stop)
@@ -334,6 +341,7 @@ siftly/
 │   ├── categorize/           # Pipeline monitor with live progress
 │   ├── import/               # 3-step import flow (instructions → upload → categorize)
 │   ├── mindmap/              # Interactive graph
+│   ├── read-later/           # Read Later list
 │   ├── settings/             # Configuration
 │   └── page.tsx              # Dashboard
 │
@@ -373,7 +381,7 @@ siftly/
 ### Database Schema
 
 ```
-Bookmark          — tweet text, author, date, raw JSON, semantic tags, enrichment metadata, archive status
+Bookmark          — tweet text, author, date, raw JSON, semantic tags, enrichment metadata, archive status, Read Later
   ├── MediaItem   — images / videos / GIFs with AI-generated image tags and local archive paths
   └── BookmarkCategory — category assignments with confidence scores (0–1)
 
