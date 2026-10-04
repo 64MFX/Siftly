@@ -54,6 +54,9 @@ dev.db-journal
 *.db
 *.db-journal
 
+# Local archive of saved tweets/media (lives next to the database)
+prisma/archive/
+
 # OS
 .DS_Store
 Thumbs.db

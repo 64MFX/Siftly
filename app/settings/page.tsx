@@ -27,6 +27,8 @@ import {
   FolderOpen,
   RefreshCw,
   Server,
+  HardDrive,
+  Square,
 } from 'lucide-react'
 
 type AIProvider = 'anthropic' | 'openai' | 'minimax' | 'proxy'
@@ -1237,6 +1239,233 @@ function DataSection() {
   )
 }
 
+interface ArchiveStatusResponse {
+  stats: { total: number; archived: number; complete: number; partial: number; failed: number; pending: number }
+  job: {
+    status: 'idle' | 'running' | 'stopping'
+    total: number
+    done: number
+    complete: number
+    partial: number
+    failed: number
+    current: string | null
+    error: string | null
+  }
+  autoArchive: boolean
+  archiveDir: string
+  diskUsageBytes: number | null
+  xAccess: 'session' | 'guest'
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
+function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
+  const [status, setStatus] = useState<ArchiveStatusResponse | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [savingToggle, setSavingToggle] = useState(false)
+  const [starting, setStarting] = useState(false)
+
+  const load = useCallback(async (withUsage = false) => {
+    try {
+      const res = await fetch(`/api/archive${withUsage ? '?usage=1' : ''}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load archive status')
+      setStatus((prev) => ({ ...data, diskUsageBytes: data.diskUsageBytes ?? prev?.diskUsageBytes ?? null }))
+      setLoadError(null)
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load archive status')
+    }
+  }, [])
+
+  useEffect(() => { void load(true) }, [load])
+
+  const running = status?.job.status === 'running' || status?.job.status === 'stopping'
+
+  // Poll while a job runs; refresh disk usage once it finishes
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => { void load() }, 1500)
+    return () => {
+      clearInterval(timer)
+      void load(true)
+    }
+  }, [running, load])
+
+  async function handleToggle() {
+    if (!status) return
+    setSavingToggle(true)
+    try {
+      const res = await fetch('/api/archive', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoArchive: !status.autoArchive }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save')
+      setStatus({ ...status, autoArchive: data.autoArchive })
+    } catch (err) {
+      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save setting' })
+    } finally {
+      setSavingToggle(false)
+    }
+  }
+
+  async function handleStart(mode: 'pending' | 'retry' | 'all') {
+    setStarting(true)
+    try {
+      const res = await fetch('/api/archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to start')
+      await load()
+    } catch (err) {
+      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to start archiving' })
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  async function handleStop() {
+    await fetch('/api/archive', { method: 'DELETE' }).catch(() => {})
+    await load()
+  }
+
+  const stats = status?.stats
+  const job = status?.job
+  const retryCount = (stats?.partial ?? 0) + (stats?.failed ?? 0)
+  const pct = job && job.total > 0 ? Math.round((job.done / job.total) * 100) : 0
+
+  return (
+    <Section
+      icon={HardDrive}
+      title="Local Archive"
+      description="Save each bookmark's full text, images, videos and X Articles (with images in place) to disk, so they stay readable even if the original is deleted from X."
+    >
+      {!status ? (
+        loadError
+          ? <p className="text-sm text-red-400">{loadError}</p>
+          : <div className="h-24 rounded-xl bg-zinc-800/50 animate-pulse" />
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
+              <p className="text-lg font-semibold text-zinc-100 tabular-nums">{stats!.archived.toLocaleString()}<span className="text-xs text-zinc-500 font-normal"> / {stats!.total.toLocaleString()}</span></p>
+              <p className="text-xs text-zinc-500">Saved locally</p>
+            </div>
+            <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
+              <p className="text-lg font-semibold text-zinc-100 tabular-nums">{stats!.pending.toLocaleString()}</p>
+              <p className="text-xs text-zinc-500">Not saved yet</p>
+            </div>
+            <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
+              <p className={`text-lg font-semibold tabular-nums ${retryCount > 0 ? 'text-amber-400' : 'text-zinc-100'}`}>{retryCount.toLocaleString()}</p>
+              <p className="text-xs text-zinc-500">Incomplete / failed</p>
+            </div>
+          </div>
+
+          <p className="text-xs text-zinc-500">
+            Stored in <code className="font-mono text-zinc-400 break-all">{status.archiveDir}</code>
+            {status.diskUsageBytes !== null && <> · {formatBytes(status.diskUsageBytes)} used</>}
+            . Each bookmark gets its own folder with an <code className="font-mono">index.html</code> you can open without Siftly.
+          </p>
+
+          <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs ${
+            status.xAccess === 'session' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400' : 'border-zinc-700/50 bg-zinc-800/40 text-zinc-400'
+          }`}>
+            <Info size={13} className="shrink-0 mt-0.5" />
+            {status.xAccess === 'session'
+              ? 'Using your saved X session to fetch full posts and X Articles.'
+              : 'Using guest access to X. Long-form X Articles may only save their preview — save your X session (auth_token + ct0) in Import → Live sync to archive them in full.'}
+          </div>
+
+          <button
+            onClick={() => void handleToggle()}
+            disabled={savingToggle}
+            className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5 text-left transition-colors hover:border-zinc-600 disabled:opacity-60"
+          >
+            <span>
+              <span className="block text-sm font-medium text-zinc-200">Save new bookmarks automatically</span>
+              <span className="block text-xs text-zinc-500">Archive right after every import and scheduled sync</span>
+            </span>
+            <span className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${status.autoArchive ? 'bg-indigo-600' : 'bg-zinc-700'}`}>
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${status.autoArchive ? 'left-[18px]' : 'left-0.5'}`} />
+            </span>
+          </button>
+
+          {running && job ? (
+            <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="flex items-center gap-2 text-zinc-200">
+                  <Loader2 size={14} className="animate-spin text-indigo-400" />
+                  {job.status === 'stopping' ? 'Stopping…' : `Saving ${job.done.toLocaleString()} of ${job.total.toLocaleString()}`}
+                  {job.current && job.status === 'running' && <span className="text-xs text-zinc-500 truncate">{job.current}</span>}
+                </span>
+                <button
+                  onClick={() => void handleStop()}
+                  disabled={job.status === 'stopping'}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+                >
+                  <Square size={10} /> Stop
+                </button>
+              </div>
+              <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                <div className="h-full bg-indigo-500 transition-all" style={{ width: `${pct}%` }} />
+              </div>
+              {(job.partial > 0 || job.failed > 0) && (
+                <p className="text-xs text-amber-400">{job.partial} incomplete · {job.failed} failed so far</p>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => void handleStart('pending')}
+                disabled={starting || stats!.pending === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <HardDrive size={14} />
+                {stats!.pending > 0 ? `Save ${stats!.pending.toLocaleString()} bookmark${stats!.pending === 1 ? '' : 's'}` : 'Everything is saved'}
+              </button>
+              {retryCount > 0 && (
+                <button
+                  onClick={() => void handleStart('retry')}
+                  disabled={starting}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-medium text-zinc-200 disabled:opacity-50 transition-colors"
+                >
+                  <RefreshCw size={14} />
+                  Retry {retryCount.toLocaleString()} incomplete
+                </button>
+              )}
+              {stats!.archived > 0 && (
+                <button
+                  onClick={() => void handleStart('all')}
+                  disabled={starting}
+                  className="px-3 py-2.5 rounded-xl text-sm text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  title="Fetch every bookmark again and fill in anything missing. Existing files are kept."
+                >
+                  Refresh all
+                </button>
+              )}
+            </div>
+          )}
+          {job?.error && !running && <p className="text-xs text-red-400">Last run: {job.error}</p>}
+        </div>
+      )}
+    </Section>
+  )
+}
+
 function DangerZoneSection({ onToast }: { onToast: (t: Toast) => void }) {
   const [confirming, setConfirming] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -1566,6 +1795,7 @@ export default function SettingsPage() {
         <ApiKeySection onToast={showToast} />
         <XOAuthSection onToast={showToast} />
         <DataSection />
+        <LocalArchiveSection onToast={showToast} />
         <ObsidianExportBlock onToast={showToast} />
         <DangerZoneSection onToast={showToast} />
         <AboutSection />

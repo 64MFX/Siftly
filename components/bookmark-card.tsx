@@ -1,8 +1,10 @@
 'use client'
 
 import React, { useRef, useEffect, useState } from 'react'
-import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe } from 'lucide-react'
+import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe, HardDrive, HardDriveDownload, Loader2 } from 'lucide-react'
 import type { BookmarkWithMedia, Category } from '@/lib/types'
+import { archiveFileUrl } from '@/lib/archive-types'
+import ArchiveReader from '@/components/archive-reader'
 
 // ── URL helpers ────────────────────────────────────────────────────────────────
 
@@ -356,6 +358,11 @@ function MediaPlaceholder({ onClick, label, isVideo }: { onClick?: (e: React.Mou
 
 function TopMediaSlot({ item, tweetUrl }: TopMediaSlotProps) {
   const [imgError, setImgError] = useState(false)
+  const [localFailed, setLocalFailed] = useState(false)
+
+  // Prefer the locally archived copy; fall back to X if it's missing
+  const localSrc = item.localPath && !localFailed ? archiveFileUrl(item.localPath) : null
+  const localPoster = item.localThumbnailPath ? archiveFileUrl(item.localThumbnailPath) : null
 
   // ── Photo: show inline ─────────────────────────────────────────────────────
   if (item.type === 'photo') {
@@ -374,28 +381,55 @@ function TopMediaSlot({ item, tweetUrl }: TopMediaSlotProps) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={proxyUrl(item.url)}
+        src={localSrc ?? proxyUrl(item.url)}
         alt="Bookmark media"
         className="w-full h-48 object-cover"
         loading="lazy"
-        onError={() => setImgError(true)}
+        onError={() => (localSrc ? setLocalFailed(true) : setImgError(true))}
       />
     )
   }
 
-  // ── Video/GIF: always redirect to tweet — can't play locally ──────────────
+  // ── Video/GIF saved locally: play inline ──────────────────────────────────
+  if (localSrc) {
+    return item.type === 'gif' ? (
+      <video
+        src={localSrc}
+        poster={localPoster ?? undefined}
+        autoPlay
+        loop
+        muted
+        playsInline
+        className="w-full h-48 object-cover bg-black"
+        onError={() => setLocalFailed(true)}
+      />
+    ) : (
+      <video
+        src={localSrc}
+        poster={localPoster ?? undefined}
+        controls
+        preload="metadata"
+        playsInline
+        className="w-full max-h-96 bg-black"
+        onError={() => setLocalFailed(true)}
+      />
+    )
+  }
+
+  // ── Video/GIF not archived: redirect to tweet ─────────────────────────────
   // Guard: thumbnailUrl that is itself a video URL is not usable as an <img>
   const rawThumb = item.thumbnailUrl ?? null
   const thumb = rawThumb && !isVideoUrl(rawThumb) ? rawThumb
     : (!isVideoUrl(item.url) ? item.url : deriveVideoThumb(item.url))
+  const thumbSrc = localPoster ?? (thumb ? proxyUrl(thumb) : null)
 
   return (
     <a href={tweetUrl} target="_blank" rel="noopener noreferrer" className="relative block" onClick={(e) => e.stopPropagation()}>
-      {thumb && !imgError ? (
+      {thumbSrc && !imgError ? (
         <div className="relative">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={proxyUrl(thumb)}
+            src={thumbSrc}
             alt=""
             className="w-full h-48 object-cover"
             loading="lazy"
@@ -591,12 +625,19 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
   const [categories, setCategories] = useState(bookmark.categories)
   const [expanded, setExpanded] = useState(false)
   const [editingCategories, setEditingCategories] = useState(false)
+  const [mediaItems, setMediaItems] = useState(bookmark.mediaItems)
+  const [archiveStatus, setArchiveStatus] = useState(bookmark.archiveStatus ?? null)
+  const [archivedAt, setArchivedAt] = useState(bookmark.archivedAt ?? null)
+  const [archiving, setArchiving] = useState(false)
+  const [archiveMessage, setArchiveMessage] = useState<string | null>(null)
+  const [readerOpen, setReaderOpen] = useState(false)
 
   const tweetUrl = (bookmark.authorHandle && bookmark.authorHandle !== 'unknown')
     ? `https://twitter.com/${bookmark.authorHandle}/status/${bookmark.tweetId}`
     : `https://twitter.com/i/web/status/${bookmark.tweetId}`
-  const firstMedia = bookmark.mediaItems[0] ?? null
-  const hasMedia = bookmark.mediaItems.length > 0
+  const firstMedia = mediaItems[0] ?? null
+  const hasMedia = mediaItems.length > 0
+  const isArchived = archivedAt !== null
   const dateStr = formatDate(bookmark.tweetCreatedAt ?? bookmark.importedAt ?? null)
   const isKnownAuthor = bookmark.authorHandle !== 'unknown'
 
@@ -635,10 +676,31 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
     setEditingCategories(false)
   }
 
+  async function handleArchive() {
+    setArchiving(true)
+    setArchiveMessage(null)
+    try {
+      const res = await fetch(`/api/archive/${bookmark.id}`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setArchiveStatus(data.status)
+      setArchivedAt(data.archivedAt)
+      if (Array.isArray(data.mediaItems)) setMediaItems(data.mediaItems)
+      if (data.status === 'failed') setArchiveMessage(data.warnings?.[0] ?? 'Archiving failed')
+      else if (data.status === 'partial') setArchiveMessage('Saved, but some content could not be downloaded')
+    } catch (err) {
+      setArchiveMessage(err instanceof Error ? err.message : 'Archiving failed')
+    } finally {
+      setArchiving(false)
+    }
+  }
+
   function handleDownload() {
     if (!firstMedia) return
     const a = document.createElement('a')
-    a.href = `/api/media?url=${encodeURIComponent(firstMedia.url)}&download=1`
+    a.href = firstMedia.localPath
+      ? `${archiveFileUrl(firstMedia.localPath)}?download=1`
+      : `/api/media?url=${encodeURIComponent(firstMedia.url)}&download=1`
     a.download = ''
     document.body.appendChild(a)
     a.click()
@@ -675,11 +737,11 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
     }
 
     // Media
-    if (bookmark.mediaItems.length > 0) {
+    if (mediaItems.length > 0) {
       lines.push('')
       lines.push('---')
       lines.push('')
-      for (const m of bookmark.mediaItems) {
+      for (const m of mediaItems) {
         if (m.type === 'photo') {
           lines.push(`![Image](${m.url})`)
         } else {
@@ -701,7 +763,7 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
 
   // Only show download if media is a photo or a real video (not a thumbnail JPEG stored as video)
   const isDownloadable = firstMedia !== null &&
-    (firstMedia.type === 'photo' || isVideoUrl(firstMedia.url))
+    (firstMedia.type === 'photo' || isVideoUrl(firstMedia.url) || !!firstMedia.localPath)
 
   return (
     <div className="group relative bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-zinc-700 hover:shadow-xl hover:shadow-black/30 transition-all duration-200 flex flex-col flex-1">
@@ -736,6 +798,14 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
 
           {/* Actions — visible on hover */}
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
+            <button
+              onClick={() => void handleArchive()}
+              disabled={archiving}
+              className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 disabled:opacity-60 transition-colors"
+              title={isArchived ? 'Update local copy from X' : 'Save a full local copy (text, images, video, article)'}
+            >
+              {archiving ? <Loader2 size={13} className="animate-spin" /> : <HardDriveDownload size={13} />}
+            </button>
             <button
               onClick={handleDownloadMarkdown}
               className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
@@ -811,12 +881,35 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
             {categories.length === 0 && (
               <span className="text-xs text-zinc-700 italic">Uncategorized</span>
             )}
-            {isKnownAuthor && dateStr && (
-              <span className="ml-auto text-xs text-zinc-600 flex-shrink-0">
-                {dateStr}
+            {(isArchived || (isKnownAuthor && dateStr)) && (
+              <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+                {isArchived && (
+                  <button
+                    onClick={() => setReaderOpen(true)}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium border transition-colors ${
+                      archiveStatus === 'partial'
+                        ? 'text-amber-400 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20'
+                        : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20'
+                    }`}
+                    title={archiveStatus === 'partial'
+                      ? 'Saved locally, but some content could not be downloaded — click to read'
+                      : 'Saved locally — click to read the archived copy'}
+                  >
+                    <HardDrive size={10} />
+                    Saved
+                  </button>
+                )}
+                {isKnownAuthor && dateStr && (
+                  <span className="text-xs text-zinc-600">{dateStr}</span>
+                )}
               </span>
             )}
           </div>
+          {archiveMessage && (
+            <p className={`mt-1.5 text-[11px] ${archiveStatus === 'partial' ? 'text-amber-400' : 'text-red-400'}`}>
+              {archiveMessage}
+            </p>
+          )}
 
           {/* Row 2: edit button — always in DOM to reserve space; invisible until hover */}
           <div className="mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -841,6 +934,8 @@ export default function BookmarkCard({ bookmark }: BookmarkCardProps) {
         </div>
 
       </div>
+
+      {readerOpen && <ArchiveReader bookmarkId={bookmark.id} onClose={() => setReaderOpen(false)} />}
     </div>
   )
 }

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Image, Play } from 'lucide-react'
 import type { BookmarkWithMedia } from '@/lib/types'
+import { archiveFileUrl } from '@/lib/archive-types'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -85,9 +86,10 @@ function MiniAvatar({ name, handle }: { name: string; handle: string }) {
 
 function MediaIndicator({ item }: { item: BookmarkWithMedia['mediaItems'][number] }) {
   const isVideo = item.type === 'video' || isVideoUrl(item.url)
-  const thumb = item.thumbnailUrl && !isVideoUrl(item.thumbnailUrl)
-    ? item.thumbnailUrl
-    : (!isVideoUrl(item.url) ? item.url : null)
+  const localThumb = item.localThumbnailPath ?? (item.type === 'photo' ? item.localPath : null)
+  const thumb = localThumb ? archiveFileUrl(localThumb)
+    : item.thumbnailUrl && !isVideoUrl(item.thumbnailUrl) ? item.thumbnailUrl
+      : (!isVideoUrl(item.url) ? item.url : null)
 
   if (thumb) {
     return (

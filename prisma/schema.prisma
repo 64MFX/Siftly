@@ -21,6 +21,9 @@ model Bookmark {
   enrichedAt      DateTime? // when AI enrichment last ran — drives incremental processing
   enrichmentMeta  String?   // JSON: {sentiment, people[], companies[]} from batch enrichment
   source          String    @default("bookmark")  // "bookmark" | "like"
+  archivedAt      DateTime? // when the tweet/article/media was last saved to the local archive
+  archiveStatus   String?   // "complete" | "partial" | "failed" — null means never archived
+  archiveError    String?   // warnings from the last archive run (missing media, unreachable X, …)
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
 
@@ -28,6 +31,7 @@ model Bookmark {
   @@index([tweetCreatedAt])
   @@index([enrichedAt])
   @@index([source])
+  @@index([archiveStatus])
 }
 
 model Category {
@@ -57,7 +61,8 @@ model MediaItem {
   type         String   // photo | video | gif
   url          String
   thumbnailUrl String?
-  localPath    String?
+  localPath    String?  // archived copy, relative to the archive root (e.g. "<tweetId>/media/01.jpg")
+  localThumbnailPath String? // archived poster frame for videos / GIFs
   imageTags    String?  // AI-generated structured JSON visual description
   bookmark     Bookmark @relation(fields: [bookmarkId], references: [id], onDelete: Cascade)
 

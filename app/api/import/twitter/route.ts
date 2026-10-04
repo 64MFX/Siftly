@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { triggerAutoArchive } from '@/lib/archiver'
 
 const BEARER = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I%2BxMb1nYFAA%3DUognEfK4ZPxYowpr4nMskopkC%2FDO'
 
@@ -324,6 +325,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { status: 500 }
     )
   }
+
+  if (imported > 0) void triggerAutoArchive()
 
   // Opt-in: trigger categorization in background after a successful import.
   // Enable by setting AUTO_CATEGORIZE_AFTER_IMPORT=true in the environment.

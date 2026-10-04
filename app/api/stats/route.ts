@@ -24,7 +24,7 @@ export async function GET(): Promise<NextResponse> {
         orderBy: { importedAt: 'desc' },
         include: {
           mediaItems: {
-            select: { id: true, type: true, url: true, thumbnailUrl: true },
+            select: { id: true, type: true, url: true, thumbnailUrl: true, localPath: true, localThumbnailPath: true },
           },
           categories: {
             include: {
@@ -54,6 +54,8 @@ export async function GET(): Promise<NextResponse> {
       authorName: b.authorName,
       tweetCreatedAt: b.tweetCreatedAt?.toISOString() ?? null,
       importedAt: b.importedAt.toISOString(),
+      archivedAt: b.archivedAt?.toISOString() ?? null,
+      archiveStatus: b.archiveStatus,
       mediaItems: b.mediaItems,
       categories: b.categories.map((bc) => ({
         id: bc.category.id,

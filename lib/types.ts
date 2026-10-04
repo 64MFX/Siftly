@@ -4,6 +4,9 @@ export interface MediaItem {
   url: string
   thumbnailUrl: string | null
   imageTags?: string | null
+  /** Archived copy, relative to the archive root — serve via archiveFileUrl() */
+  localPath?: string | null
+  localThumbnailPath?: string | null
 }
 
 export interface BookmarkCategory {
@@ -22,6 +25,8 @@ export interface BookmarkWithMedia {
   authorName: string
   tweetCreatedAt: string | null
   importedAt?: string
+  archivedAt?: string | null
+  archiveStatus?: string | null
   mediaItems: MediaItem[]
   categories: BookmarkCategory[]
 }

@@ -2,6 +2,9 @@
 import prisma from '@/lib/db'
 import { ftsSearch } from '@/lib/fts'
 import { extractKeywords } from '@/lib/search-utils'
+import { archiveBookmark, createXFetcher, getArchiveStats, type ArchiveMode } from '@/lib/archiver'
+import { archiveFolderName, getArchiveRoot } from '@/lib/archive-storage'
+import path from 'path'
 
 // ─── Output ──────────────────────────────────────────────────────────────────
 
@@ -165,6 +168,10 @@ async function cmdShow(args: string[]) {
     tweetCreatedAt: bookmark.tweetCreatedAt?.toISOString() ?? null,
     importedAt: bookmark.importedAt.toISOString(),
     enrichedAt: bookmark.enrichedAt?.toISOString() ?? null,
+    archivedAt: bookmark.archivedAt?.toISOString() ?? null,
+    archiveStatus: bookmark.archiveStatus,
+    archiveDir: bookmark.archivedAt ? path.join(getArchiveRoot(), archiveFolderName(bookmark.tweetId)) : null,
+    archiveWarnings: bookmark.archiveError ? bookmark.archiveError.split('\n') : [],
     semanticTags: safeParse(bookmark.semanticTags),
     entities: safeParse(bookmark.entities),
     enrichmentMeta: safeParse(bookmark.enrichmentMeta),
@@ -173,6 +180,7 @@ async function cmdShow(args: string[]) {
       type: m.type,
       url: m.url,
       thumbnailUrl: m.thumbnailUrl,
+      localPath: m.localPath ? path.join(getArchiveRoot(), m.localPath) : null,
       imageTags: safeParse(m.imageTags),
     })),
     categories: bookmark.categories.map((bc) => ({
@@ -228,6 +236,48 @@ async function cmdStats() {
   })
 }
 
+async function cmdArchiveStatus() {
+  output({ archiveDir: getArchiveRoot(), ...(await getArchiveStats()) })
+}
+
+async function cmdArchive(args: string[]) {
+  const { flags } = parseArgs(args)
+  const mode: ArchiveMode = flags.mode === 'retry' || flags.mode === 'all' ? flags.mode : 'pending'
+  const limit = flags.limit ? Math.max(parseInt(flags.limit, 10) || 0, 0) : undefined
+
+  let where: object
+  if (flags.id) where = { OR: [{ id: flags.id }, { tweetId: flags.id }] }
+  else if (mode === 'all') where = {}
+  else if (mode === 'retry') where = { OR: [{ archiveStatus: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
+  else where = { archiveStatus: null }
+
+  const bookmarks = await prisma.bookmark.findMany({
+    where,
+    select: { id: true, tweetId: true },
+    orderBy: { importedAt: 'desc' },
+    ...(limit ? { take: limit } : {}),
+  })
+  if (flags.id && bookmarks.length === 0) die(`Bookmark not found: ${flags.id}`)
+
+  // --offline: build archives from stored data only, without contacting X
+  const fetcher = flags.offline === 'true' ? null : await createXFetcher()
+  const results = []
+  for (const b of bookmarks) {
+    const r = await archiveBookmark(b.id, { fetcher })
+    results.push({ tweetId: r.tweetId, status: r.status, warnings: r.warnings })
+    if (isTTY) process.stderr.write(`[${results.length}/${bookmarks.length}] ${r.tweetId} ${r.status}\n`)
+  }
+
+  output({
+    archiveDir: getArchiveRoot(),
+    processed: results.length,
+    complete: results.filter((r) => r.status === 'complete').length,
+    partial: results.filter((r) => r.status === 'partial').length,
+    failed: results.filter((r) => r.status === 'failed').length,
+    results,
+  })
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function safeParse(json: string | null): unknown {
@@ -268,6 +318,8 @@ const COMMANDS: Record<string, string> = {
   show: 'show <id|tweetId>         Full bookmark detail',
   categories: 'categories                List categories with counts',
   stats: 'stats                     Library statistics',
+  archive: 'archive [--mode pending|retry|all] [--id <id|tweetId>] [--limit N] [--offline]   Save bookmarks locally',
+  'archive-status': 'archive-status            Local archive statistics',
 }
 
 async function main() {
@@ -299,6 +351,12 @@ async function main() {
         break
       case 'stats':
         await cmdStats()
+        break
+      case 'archive':
+        await cmdArchive(rest)
+        break
+      case 'archive-status':
+        await cmdArchiveStatus()
         break
       default:
         die(`Unknown command: ${command}. Run 'siftly --help' for usage.`)

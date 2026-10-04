@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { ExternalLink } from 'lucide-react'
 import { useMindmapSettings } from './mindmap-context'
+import { archiveFileUrl } from '@/lib/archive-types'
 
 interface TweetNodeData {
   tweetId: string
@@ -12,6 +13,7 @@ interface TweetNodeData {
   authorName: string
   tweetUrl: string
   thumbnailUrl: string | null
+  localThumbnailPath?: string | null
   mediaType: string | null
   categoryColor: string
   tweetCreatedAt: string | null
@@ -32,6 +34,7 @@ export default function TweetNode({ data }: NodeProps) {
     authorHandle,
     tweetUrl,
     thumbnailUrl,
+    localThumbnailPath,
     mediaType,
     categoryColor = '#6366f1',
   } = data as TweetNodeData
@@ -42,8 +45,8 @@ export default function TweetNode({ data }: NodeProps) {
   const isVideo = mediaType === 'video' || mediaType === 'gif'
   const color = categoryColor
 
-  // Proxy through our media API to avoid CORS issues with Twitter CDN
-  const proxied = thumbnailUrl ? proxyUrl(thumbnailUrl) : null
+  // Prefer the local archive; otherwise proxy through our media API to avoid CORS issues with Twitter CDN
+  const proxied = localThumbnailPath ? archiveFileUrl(localThumbnailPath) : thumbnailUrl ? proxyUrl(thumbnailUrl) : null
   const showImage = proxied !== null && !imgFailed
 
   return (

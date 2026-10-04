@@ -202,6 +202,34 @@ Interactive force-directed graph showing all bookmarks organized by category:
 - Active filter chips — removable individually or all at once
 - Hover any card to download media or jump to the original tweet
 
+### 💾 Local Archive
+
+Tweets get deleted, accounts get suspended, articles get pulled. The local archive saves a complete copy of every bookmark to disk so it stays readable when the original is gone:
+
+- **Full text** — long-form posts are saved untruncated, with `t.co` links expanded to their real destinations
+- **Images** in original resolution, **videos** and **GIFs** as the highest-quality MP4 X offers, plus poster frames
+- **X Articles** — the full body with headings, lists, quotes, code, links, and every inline image, video and embedded post **in its original position**
+- **Quoted posts**, link-preview cards, polls and author avatars
+
+Hover a card and click the drive icon to save it, or go to **Settings → Local Archive** to save everything at once and turn on **Save new bookmarks automatically** (runs after every import and scheduled sync). Saved bookmarks show a green **Saved** chip — click it to read the archived copy inside Siftly. Cards play saved videos inline instead of linking out to X.
+
+Each bookmark gets its own folder you can open without Siftly:
+
+```
+<archive>/<tweetId>/
+  index.html    # standalone offline page (no scripts, no network)
+  content.md    # Markdown with relative image links (works in Obsidian)
+  archive.json  # structured copy used by the app
+  source.json   # raw JSON from import time and from X
+  media/        # photos, videos, GIFs, posters, avatars
+```
+
+The archive lives next to your database (`prisma/archive/` locally, `/data/archive/` in Docker) — set `SIFTLY_ARCHIVE_DIR` to store it elsewhere. Re-archiving never deletes anything: if a post has since been removed from X, Siftly keeps the files and text it already saved.
+
+> **X Articles in full:** X only returns article bodies to logged-in sessions reliably. If you've saved your `auth_token` + `ct0` for **Import → Live sync**, the archiver uses them; otherwise it uses guest access and may only capture the article preview (it's marked *incomplete* so you can retry later).
+
+From the CLI: `npx tsx cli/siftly.ts archive` (`--mode retry|all`, `--id <tweetId>`, `--limit N`) and `npx tsx cli/siftly.ts archive-status`.
+
 ### ⚙️ Categories
 
 8 default categories pre-seeded with AI-readable descriptions:
@@ -246,6 +274,8 @@ All settings are manageable in the **Settings** page at `/settings` or via envir
 | Local Proxy URL | `AI_PROXY_BASE_URL` | OpenAI-compatible proxy such as [CLIProxyAPI / EasyCLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (default: `http://127.0.0.1:8317/v1`). Models are fetched from the proxy in Settings |
 | Local Proxy Key | `AI_PROXY_API_KEY` | One of the `api-keys` configured in the proxy |
 | Database | `DATABASE_URL` | SQLite file path (default: `file:./prisma/dev.db`) |
+| Local archive folder | `SIFTLY_ARCHIVE_DIR` | Where archived tweets/media are saved (default: `archive/` next to the database) |
+| Auto-archive | Settings page only | Save new bookmarks locally after every import and sync |
 
 ### Custom API Endpoint
 
@@ -325,8 +355,8 @@ siftly/
 ### Database Schema
 
 ```
-Bookmark          — tweet text, author, date, raw JSON, semantic tags, enrichment metadata
-  ├── MediaItem   — images / videos / GIFs with AI-generated image tags
+Bookmark          — tweet text, author, date, raw JSON, semantic tags, enrichment metadata, archive status
+  ├── MediaItem   — images / videos / GIFs with AI-generated image tags and local archive paths
   └── BookmarkCategory — category assignments with confidence scores (0–1)
 
 Category          — name, slug, hex color, AI-readable description
@@ -413,7 +443,8 @@ Add domain strings to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` to have
 ## Privacy
 
 - All data is stored **locally** in a SQLite file on your machine
-- The only external calls are to the AI provider you configure (tweet text + image data)
+- The only external calls are to the AI provider you configure (tweet text + image data) and to X itself (link previews, media, and — when you archive — fetching each post and its media from X's servers)
+- Archived tweets, articles and media are saved as plain files on your disk; nothing is uploaded anywhere
 - No telemetry, no tracking, no accounts required
 - Your bookmarks never touch any third-party server except your configured AI endpoint
 
