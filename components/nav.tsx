@@ -120,8 +120,16 @@ export default function Nav() {
       setCategories([])
       setTotalBookmarks(0)
     }
+    function handleCategoryDeleted(e: Event) {
+      const { slug } = (e as CustomEvent<{ slug: string }>).detail
+      setCategories((prev) => prev.filter((c) => c.slug !== slug))
+    }
     window.addEventListener('siftly:cleared', handleCleared)
-    return () => window.removeEventListener('siftly:cleared', handleCleared)
+    window.addEventListener('siftly:category-deleted', handleCategoryDeleted)
+    return () => {
+      window.removeEventListener('siftly:cleared', handleCleared)
+      window.removeEventListener('siftly:category-deleted', handleCategoryDeleted)
+    }
   }, [])
 
   useEffect(() => {

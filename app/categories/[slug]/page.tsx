@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { ChevronLeft, ChevronRight, Download, ArrowLeft } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, ArrowLeft, Trash2 } from 'lucide-react'
 import BookmarkCard from '@/components/bookmark-card'
+import DeleteCategoryDialog from '@/components/delete-category-dialog'
 import type { BookmarkWithMedia, Category } from '@/lib/types'
 
 const PAGE_SIZE = 24
@@ -54,6 +55,7 @@ export default function CategoryPage() {
   const [data, setData] = useState<CategoryPageData | null>(null)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   const fetchData = useCallback(async (p: number) => {
     setLoading(true)
@@ -133,14 +135,32 @@ export default function CategoryPage() {
               <p className="text-zinc-500 text-sm mt-1">{total.toLocaleString()} bookmark{total !== 1 ? 's' : ''}</p>
             </div>
           </div>
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors shrink-0"
-          >
-            <Download size={15} />
-            Export ZIP
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors"
+            >
+              <Download size={15} />
+              Export ZIP
+            </button>
+            <button
+              onClick={() => setDeleteOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-red-500/10 text-zinc-300 hover:text-red-400 text-sm font-medium transition-colors"
+            >
+              <Trash2 size={15} />
+              Delete
+            </button>
+          </div>
         </div>
+      )}
+
+      {category && (
+        <DeleteCategoryDialog
+          category={{ name: category.name, slug: category.slug, bookmarkCount: total }}
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => router.push('/categories')}
+        />
       )}
 
       {loading && (
