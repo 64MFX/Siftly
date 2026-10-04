@@ -1,60 +1,22 @@
+/**
+ * Optional scheduled "Sync from X" (Setting `x_sync_interval`: off | 1h | 4h
+ * | 8h | 24h, set through POST /api/import/live). Each run is the same sync
+ * as the Import page's (lib/x-bookmark-sync.ts) with the X login from
+ * Settings → X Login.
+ */
 import prisma from '@/lib/db'
-import { fetchPage, parsePage, importTweets } from '@/lib/twitter-api'
+import { isXSyncRunning, startXSyncJob } from '@/lib/x-bookmark-sync'
+import { getXCredentials } from '@/lib/x-session'
 
-// ── Sync ────────────────────────────────────────────────────────────────────────
+// ── Sync ────────────────────────────────────────────────────────────────────
 
-export async function syncBookmarks(
-  authToken: string,
-  ct0: string,
-): Promise<{ imported: number; skipped: number }> {
-  if (syncing) throw new Error('A sync is already in progress')
-  syncing = true
-
-  try {
-    let imported = 0
-    let skipped = 0
-    let cursor: string | undefined
-    const MAX_PAGES = 50
-
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const data = await fetchPage(authToken, ct0, cursor)
-      const { tweets, nextCursor } = parsePage(data)
-
-      // On the first page, verify the API response structure hasn't changed
-      if (page === 0 && tweets.length === 0 && !nextCursor) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hasTimeline = (data as any)?.data?.bookmark_timeline_v2?.timeline
-        if (!hasTimeline) {
-          throw new Error('Twitter API response format has changed. The sync feature may need updating.')
-        }
-      }
-
-      const result = await importTweets(tweets)
-      imported += result.imported
-      skipped += result.skipped
-
-      if (!nextCursor || tweets.length === 0) break
-      cursor = nextCursor
-
-      if (page === MAX_PAGES - 1) {
-        console.warn(`[x-sync] Hit max page limit (${MAX_PAGES}), stopping pagination`)
-      }
-    }
-
-    // Only update last sync timestamp if we actually fetched tweets
-    if (imported > 0 || skipped > 0) {
-      const now = new Date().toISOString()
-      await prisma.setting.upsert({
-        where: { key: 'x_last_sync' },
-        update: { value: now },
-        create: { key: 'x_last_sync', value: now },
-      })
-    }
-
-    return { imported, skipped }
-  } finally {
-    syncing = false
-  }
+/** Run a sync now and wait for it. skipped = bookmarks Siftly already had */
+export async function syncBookmarks(): Promise<{ imported: number; skipped: number }> {
+  const run = startXSyncJob({ mode: 'auto' })
+  if (!run) throw new Error('A sync is already in progress')
+  const result = await run
+  if (result.error) throw new Error(result.error)
+  return { imported: result.imported, skipped: result.alreadyHad }
 }
 
 // ── Scheduler ───────────────────────────────────────────────────────────────────
@@ -69,7 +31,6 @@ const INTERVAL_MS: Record<SyncInterval, number> = {
 }
 
 let schedulerTimer: ReturnType<typeof setInterval> | null = null
-let syncing = false
 
 export async function startScheduler() {
   stopScheduler()
@@ -97,30 +58,25 @@ export function stopScheduler() {
 }
 
 async function runScheduledSync() {
-  if (syncing) return
+  if (isXSyncRunning()) return
+  if (!(await getXCredentials())) {
+    console.log('[x-sync] Skipping scheduled sync: not logged in to X')
+    return
+  }
 
-  try {
-    const [authSetting, ct0Setting] = await Promise.all([
-      prisma.setting.findUnique({ where: { key: 'x_auth_token' } }),
-      prisma.setting.findUnique({ where: { key: 'x_ct0' } }),
-    ])
-
-    if (!authSetting?.value || !ct0Setting?.value) {
-      console.log('[x-sync] Skipping scheduled sync: missing credentials')
-      return
-    }
-
-    console.log(`[x-sync] Running scheduled sync at ${new Date().toISOString()}`)
-    const result = await syncBookmarks(authSetting.value, ct0Setting.value)
-    console.log(`[x-sync] Sync complete: ${result.imported} imported, ${result.skipped} skipped`)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('[x-sync] Scheduled sync failed:', message)
-    if (message.includes('401') || message.includes('403')) {
-      console.error('[x-sync] Auth error detected, stopping scheduler')
+  console.log(`[x-sync] Running scheduled sync at ${new Date().toISOString()}`)
+  const run = startXSyncJob({ mode: 'auto' })
+  if (!run) return
+  const result = await run
+  if (result.error) {
+    console.error('[x-sync] Scheduled sync failed:', result.error)
+    if (result.errorKind === 'auth' || result.errorKind === 'no-login') {
+      console.error('[x-sync] X login rejected, stopping scheduler')
       stopScheduler()
     }
+    return
   }
+  console.log(`[x-sync] Sync complete: ${result.imported} imported, ${result.alreadyHad} already in Siftly`)
 }
 
 export function isSchedulerRunning() {
@@ -128,5 +84,5 @@ export function isSchedulerRunning() {
 }
 
 export function isSyncing() {
-  return syncing
+  return isXSyncRunning()
 }

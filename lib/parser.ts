@@ -1,3 +1,5 @@
+import { importedTweetFromGraphql, isGraphqlTweet } from '@/lib/x-tweet-import'
+
 export interface ParsedMedia {
   type: 'photo' | 'video' | 'gif'
   url: string
@@ -319,6 +321,28 @@ function normalizeTweetArray(parsed: unknown): RawTweet[] {
   return []
 }
 
+/**
+ * Tweets as X's GraphQL API returns them: the bookmarklet's export
+ * ({ format: 'siftly-x-bookmarks', tweets: [...] }) or a plain array of them
+ */
+function graphqlTweetsIn(parsed: unknown): unknown[] | null {
+  const list = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray((parsed as { tweets?: unknown } | null)?.tweets)
+      ? (parsed as { tweets: unknown[] }).tweets
+      : null
+  return list && list.some(isGraphqlTweet) ? list : null
+}
+
+function parseGraphqlTweet(raw: unknown): ParsedBookmark | null {
+  const tweet = importedTweetFromGraphql(raw)
+  if (!tweet) return null
+  return {
+    ...tweet,
+    media: tweet.media.map((m) => ({ type: m.type, url: m.url, thumbnailUrl: m.thumbnailUrl ?? undefined })),
+  }
+}
+
 export function parseBookmarksJson(jsonString: string): ParsedBookmark[] {
   if (!jsonString || jsonString.trim() === '') {
     throw new Error('Empty JSON string provided')
@@ -330,6 +354,9 @@ export function parseBookmarksJson(jsonString: string): ParsedBookmark[] {
   } catch (err) {
     throw new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`)
   }
+
+  const graphql = graphqlTweetsIn(parsed)
+  if (graphql) return graphql.map(parseGraphqlTweet).filter((b): b is ParsedBookmark => b !== null)
 
   const tweets = normalizeTweetArray(parsed)
 

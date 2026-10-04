@@ -12,12 +12,11 @@
  * back to the JSON stored at import time.
  */
 import { snapshotFromGraphql, snapshotFromSyndication, type TweetSnapshot } from '@/lib/tweet-snapshot'
+import { X_WEB_BEARER } from '@/lib/x-web-client'
 
-/** Public bearer token used by the x.com web client */
-export const X_WEB_BEARER =
-  'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
+export { X_WEB_BEARER }
 
-const BROWSER_UA =
+export const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 // Query IDs rotate when X deploys. The current one is discovered from the

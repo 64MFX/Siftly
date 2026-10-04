@@ -46,6 +46,7 @@ app/
   api/
     categorize/       # 4-stage AI pipeline (start/stop/status via SSE)
     import/           # Bookmark JSON import + dedup
+      x-sync/         # Sync from X: POST start {mode}, GET progress + X login, DELETE stop
     search/ai/        # AI search: POST query (questions get an answer), GET index stats
     settings/
       cli-status/     # GET — returns Claude CLI auth status
@@ -93,6 +94,12 @@ lib/
   archive-location.ts # Archive folder (Setting `archiveDir` → SIFTLY_ARCHIVE_DIR → default), moving it
   tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
   x-tweet-fetcher.ts  # Fresh tweet copies from X (GraphQL TweetResultByRestId → syndication)
+  x-bookmark-sync.ts  # Sync from X: imports bookmarks newest first; first run reads all, later runs stop at 40 known in a row; completes "unknown"-author rows
+  x-bookmarks-api.ts  # X's GraphQL Bookmarks timeline: query ID fallbacks + discovery, GET→POST, missing features, 429 waits, page parsing
+  x-tweet-import.ts   # GraphQL tweet → new Bookmark fields (author from user.core or user.legacy), slimmed rawJson
+  x-web-client.ts     # x.com web client constants (bearer, Bookmarks query ID / features) — client-safe
+  x-export-script.ts  # The Import page's bookmarklet + console script (one source): reads bookmarks from the top inside x.com, downloads x-bookmarks-<date>.json
+  x-sync.ts           # Optional scheduled sync (x_sync_interval via /api/import/live)
   archive-storage.ts  # Archive root, safe paths, media downloads
   archive-render.ts   # Offline index.html + content.md renderers
   archive-types.ts    # Archive document types (client-safe)
@@ -131,6 +138,7 @@ npx tsx cli/siftly.ts list --read-later              # Read Later list, most rec
 npx tsx cli/siftly.ts read-later <id|tweetId>        # Put on Read Later (--folder <name|none> files it, --remove takes it off)
 npx tsx cli/siftly.ts read-later-folders             # Read Later folders with counts (--create, --rename … --to, --delete)
 npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
+npx tsx cli/siftly.ts sync                           # Import new bookmarks from X (X login from Settings; first run reads them all, --all always)
 npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
 npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
 npx tsx cli/siftly.ts archive-status                 # Archive statistics
@@ -143,6 +151,8 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Task | How |
 |------|-----|
 | Run AI pipeline | `POST /api/categorize` with `{}` body; `GET /api/categorize` for SSE progress |
+| Sync bookmarks from X | `POST /api/import/x-sync` with `{"mode":"auto"}` (`new` / `all`); `GET /api/import/x-sync` for progress; `DELETE` stops. Needs the X login (Settings → X Login). `auto` reads the whole list until one run has reached the end (Setting `x_bookmark_sync_full_check_at`), then stops after `STOP_AFTER_KNOWN` already-imported bookmarks in a row. If X rotated the Bookmarks query ID and discovery fails, set `SIFTLY_X_BOOKMARKS_QUERY_ID` |
+| Bookmarklet / console export | `lib/x-export-script.ts` (`X_EXPORT_SCRIPT`, `X_EXPORT_BOOKMARKLET`). Downloads `{format:"siftly-x-bookmarks", tweets:[GraphQL tweets]}`; `lib/parser.ts` reads it (and plain GraphQL tweet arrays) through `importedTweetFromGraphql()` |
 | Add category | Edit `DEFAULT_CATEGORIES` in `lib/categorizer.ts` — description is passed verbatim to Claude |
 | Rename / re-describe a category | `PATCH /api/categories/<slug>` with any of `{"name","description","color"}`. Slug stays the same; sets `userEdited` so default seeding won't overwrite it |
 | Add known tool | Append domain to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` |

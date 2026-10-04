@@ -1,21 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { startScheduler, stopScheduler, isSchedulerRunning } from '@/lib/x-sync'
+import { getXSyncStatus } from '@/lib/x-bookmark-sync'
 
 /** GET — return current X credentials status + schedule config */
 export async function GET() {
   try {
-    const [authToken, ct0, interval, lastSync] = await Promise.all([
+    const [authToken, ct0, interval, sync] = await Promise.all([
       prisma.setting.findUnique({ where: { key: 'x_auth_token' } }),
       prisma.setting.findUnique({ where: { key: 'x_ct0' } }),
       prisma.setting.findUnique({ where: { key: 'x_sync_interval' } }),
-      prisma.setting.findUnique({ where: { key: 'x_last_sync' } }),
+      getXSyncStatus(),
     ])
 
     return NextResponse.json({
       hasCredentials: !!(authToken?.value && ct0?.value),
       syncInterval: interval?.value ?? 'off',
-      lastSync: lastSync?.value ?? null,
+      lastSync: sync.last && !sync.last.error ? sync.last.finishedAt : null,
       schedulerRunning: isSchedulerRunning(),
     })
   } catch (err) {
