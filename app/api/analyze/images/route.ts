@@ -3,6 +3,7 @@ import prisma from '@/lib/db'
 import { analyzeBatch } from '@/lib/vision-analyzer'
 import { AIClient, resolveAIClient } from '@/lib/ai-client'
 import { getProvider, apiKeySettingFor } from '@/lib/settings'
+import { refreshSearchRows } from '@/lib/search-index'
 
 // GET: returns progress stats
 export async function GET(): Promise<NextResponse> {
@@ -42,7 +43,7 @@ async function runAnalysis(client: AIClient | null, batchSize: number): Promise<
   const untagged = await prisma.mediaItem.findMany({
     where: { imageTags: null, type: { in: ['photo', 'gif'] } },
     take: batchSize,
-    select: { id: true, url: true, thumbnailUrl: true, type: true },
+    select: { id: true, url: true, thumbnailUrl: true, type: true, bookmarkId: true },
   })
 
   if (untagged.length === 0) {
@@ -50,6 +51,10 @@ async function runAnalysis(client: AIClient | null, batchSize: number): Promise<
   }
 
   const analyzed = await analyzeBatch(untagged, client)
+  // Text and objects in the images become searchable
+  await refreshSearchRows([...new Set(untagged.map((m) => m.bookmarkId))]).catch((err) =>
+    console.error('Search index refresh error:', err),
+  )
 
   const remaining = await prisma.mediaItem.count({
     where: { imageTags: null, type: { in: ['photo', 'gif'] } },

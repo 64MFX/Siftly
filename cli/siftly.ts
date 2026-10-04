@@ -1,6 +1,8 @@
 #!/usr/bin/env npx tsx
 import prisma from '@/lib/db'
-import { ftsSearch } from '@/lib/fts'
+import { buildMatchExpression, excerpt } from '@/lib/search-document'
+import { loadSearchDocuments, searchIndex, syncSearchIndex } from '@/lib/search-index'
+import { aiSearch, fuseRankings } from '@/lib/ai-search'
 import { extractKeywords } from '@/lib/search-utils'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
 import {
@@ -63,41 +65,66 @@ async function cmdSearch(args: string[]) {
   const keywords = extractKeywords(query)
   if (keywords.length === 0) die('No searchable keywords in query')
 
-  const ftsIds = await ftsSearch(keywords)
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let where: any
-  if (ftsIds.length > 0) {
-    where = { id: { in: ftsIds } }
-  } else {
-    // Fallback to LIKE
-    where = {
-      OR: keywords.flatMap((kw) => [
-        { text: { contains: kw } },
-        { semanticTags: { contains: kw } },
-        { entities: { contains: kw } },
-      ]),
-    }
+  await syncSearchIndex()
+  const hits = async (mode: 'all' | 'any') => {
+    const match = buildMatchExpression(keywords, mode)
+    return match ? (await searchIndex(match, 200)).map((h) => h.id) : []
   }
+  // Bookmarks with every keyword first, then any of them
+  const ids = fuseRankings([
+    { ids: keywords.length > 1 ? await hits('all') : [], weight: 1.5 },
+    { ids: await hits('any'), weight: 1 },
+  ]).slice(0, limit)
 
-  const bookmarks = await prisma.bookmark.findMany({
-    where,
-    take: limit,
-    orderBy: ftsIds.length > 0 ? undefined : [{ tweetCreatedAt: 'desc' }],
-    include: {
-      mediaItems: { select: { id: true, type: true, url: true } },
-      categories: {
-        include: { category: { select: { name: true, slug: true } } },
-        orderBy: { confidence: 'desc' },
+  const [rows, docs] = await Promise.all([
+    prisma.bookmark.findMany({
+      where: { id: { in: ids } },
+      include: {
+        mediaItems: { select: { id: true, type: true, url: true } },
+        categories: {
+          include: { category: { select: { name: true, slug: true } } },
+          orderBy: { confidence: 'desc' },
+        },
       },
-    },
+    }),
+    loadSearchDocuments(ids),
+  ])
+  const byId = new Map(rows.map((b) => [b.id, b]))
+  const bookmarks = ids.flatMap((id) => {
+    const b = byId.get(id)
+    if (!b) return []
+    const doc = docs.get(id)
+    // Where the keywords appear — the X Article body when there is one
+    const source = doc?.article?.text || doc?.text || b.text
+    return [{ ...formatBookmark(b), ...(doc?.article ? { articleTitle: doc.article.title } : {}), match: excerpt(source, keywords, 400) }]
   })
 
+  output({ query, keywords, count: bookmarks.length, bookmarks })
+}
+
+async function cmdAiSearch(args: string[]) {
+  const { positional, flags } = parseArgs(args)
+  const query = positional.join(' ')
+  if (!query) die('Usage: siftly ai-search <query or question> [--category <slug>]')
+
+  const result = await aiSearch(query, { category: flags.category })
   output({
     query,
-    keywords,
-    count: bookmarks.length,
-    bookmarks: bookmarks.map(formatBookmark),
+    answer: result.answer,
+    explanation: result.explanation,
+    ...(result.notice ? { notice: result.notice } : {}),
+    count: result.bookmarks.length,
+    bookmarks: result.bookmarks.map((b, i) => ({
+      result: i + 1,
+      score: b.aiScore,
+      reason: b.aiReason,
+      id: b.id,
+      tweetId: b.tweetId,
+      authorHandle: b.authorHandle,
+      text: b.text,
+      tweetCreatedAt: b.tweetCreatedAt,
+      categories: b.categories.map((c) => c.slug),
+    })),
   })
 }
 
@@ -345,7 +372,8 @@ function formatBookmark(b: any) {
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 const COMMANDS: Record<string, string> = {
-  search: 'search <query>           FTS5 keyword search',
+  search: 'search <query>           Keyword search over posts, quoted posts, links and full X Articles',
+  'ai-search': 'ai-search <query> [--category <slug>]   AI search; questions get an answer citing the results',
   list: 'list [--source] [--category] [--author] [--media photo|video|article] [--sort] [--limit] [--page]',
   show: 'show <id|tweetId>         Full bookmark detail',
   categories: 'categories                List categories with counts',
@@ -372,6 +400,9 @@ async function main() {
     switch (command) {
       case 'search':
         await cmdSearch(rest)
+        break
+      case 'ai-search':
+        await cmdAiSearch(rest)
         break
       case 'list':
         await cmdList(rest)

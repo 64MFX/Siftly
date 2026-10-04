@@ -16,7 +16,7 @@ import {
   BookmarkForEnrichment,
 } from '@/lib/vision-analyzer'
 import { backfillEntities } from '@/lib/rawjson-extractor'
-import { rebuildFts } from '@/lib/fts'
+import { refreshSearchRows } from '@/lib/search-index'
 
 type Stage = 'vision' | 'entities' | 'enrichment' | 'categorize' | 'parallel'
 
@@ -364,9 +364,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       setState({ lastError: err instanceof Error ? err.message.slice(0, 200) : String(err) })
     }
 
-    if (!shouldAbort()) {
-      await rebuildFts().catch((err) => console.error('FTS rebuild error:', err))
-    }
+    // New AI tags and image analysis become searchable — even from a run that was stopped
+    await refreshSearchRows().catch((err) => console.error('Search index refresh error:', err))
   })()
     .then(() => {
       const wasStopped = globalState.categorizationAbort

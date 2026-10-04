@@ -46,7 +46,7 @@ app/
   api/
     categorize/       # 4-stage AI pipeline (start/stop/status via SSE)
     import/           # Bookmark JSON import + dedup
-    search/ai/        # FTS5 + Claude semantic search
+    search/ai/        # AI search: POST query (questions get an answer), GET index stats
     settings/
       cli-status/     # GET — returns Claude CLI auth status
       test/           # POST — validates API key or CLI auth
@@ -74,7 +74,9 @@ lib/
   proxy-auth.ts       # Local proxy provider (CLIProxyAPI / EasyCLIProxyAPI)
   categorizer.ts      # AI categorization + default categories
   vision-analyzer.ts  # Image vision + semantic tagging
-  fts.ts              # SQLite FTS5 full-text search
+  ai-search.ts        # AI search: understand query → FTS + category/author/kind/date candidates → AI reads & ranks
+  search-index.ts     # Search index (raw SQL tables bookmark_search_doc + FTS5 bookmark_search_fts), self-syncing
+  search-document.ts  # A bookmark's searchable content (post, quote, link card, full X Article from the archive), excerpts
   rawjson-extractor.ts # Entity extraction from tweet JSON
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
@@ -112,7 +114,8 @@ See `.env.example` for the full list. Only `DATABASE_URL` is required (defaults 
 ```bash
 npx tsx cli/siftly.ts stats                          # Library statistics
 npx tsx cli/siftly.ts categories                     # Categories with counts
-npx tsx cli/siftly.ts search "AI agents"             # FTS5 keyword search
+npx tsx cli/siftly.ts search "AI agents"             # Keyword search (posts, quotes, links, full X Articles)
+npx tsx cli/siftly.ts ai-search "how do people fine-tune small models?"  # AI search; questions get an answer
 npx tsx cli/siftly.ts list --limit 5                 # Recent bookmarks
 npx tsx cli/siftly.ts list --source like --category ai-resources --sort oldest
 npx tsx cli/siftly.ts list --media article           # X Articles only (also photo / video)
@@ -139,6 +142,8 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Change archive folder | `PUT /api/archive` with `{"archiveDir":"/abs/path","moveFiles":true}` (`null` = default) |
 | Archive one bookmark | `POST /api/archive/<id or tweetId>`; read it back with `GET /api/archive/<id>` |
 | Filter X Articles | `GET /api/bookmarks?mediaType=article` (matches the stored `article` object or an `x.com/i/article/` link) |
+| AI search | `POST /api/search/ai` with `{"query"}` → ranked bookmarks with `aiReason`, plus `answer` (citing results as [1], [2]…) for questions. `GET /api/search/ai` = index stats (how many X Articles are readable in full) |
+| Change what search can read | `buildSearchDocument` / `buildSearchRow` in `lib/search-document.ts`; bump `SEARCH_DOC_VERSION` so every bookmark is re-indexed |
 | Delete one bookmark | `DELETE /api/bookmarks/<id or tweetId>`; add `?deleteArchive=true` to remove its archive folder too. Siftly only — it stays bookmarked on X, so a later sync can re-add it |
 
 ## Database
@@ -146,5 +151,7 @@ npm run siftly -- stats                              # Alternative via npm scrip
 SQLite at `prisma/dev.db`. After schema changes: `npx prisma db push`
 
 Models: `Bookmark`, `MediaItem`, `BookmarkCategory`, `Category`, `Setting`, `ImportJob` — see `prisma/schema.prisma` for details.
+
+The search index is two runtime-managed tables (not in the Prisma schema): `bookmark_search_doc` (extracted content per bookmark) and FTS5 `bookmark_search_fts`. `syncSearchIndex()` indexes new bookmarks before every search; the archiver re-indexes a bookmark after saving it (so archived X Articles become searchable in full), and the AI pipeline / image analysis call `refreshSearchRows()`.
 
 Local archive files live in the folder chosen in Settings (Setting `archiveDir`), else `SIFTLY_ARCHIVE_DIR`, else `archive/` next to the database (`prisma/archive/`). Always resolve it with `getArchiveRoot()` from `lib/archive-location.ts`. `MediaItem.localPath` / `localThumbnailPath` are relative to that folder.

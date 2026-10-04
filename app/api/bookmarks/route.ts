@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
+import { clearSearchIndex } from '@/lib/search-index'
 
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 24
@@ -21,6 +22,7 @@ export async function DELETE(): Promise<NextResponse> {
       prisma.bookmark.deleteMany({}),
       prisma.category.deleteMany({}),
     ])
+    await clearSearchIndex().catch((err) => console.error('Search index clear error:', err))
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error('Clear bookmarks error:', err)

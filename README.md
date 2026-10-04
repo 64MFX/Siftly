@@ -175,14 +175,22 @@ The pipeline is **incremental** — if interrupted, it picks up where it left of
 
 ### 🔍 AI Search
 
-Natural language queries across all bookmark data:
+Describe what you're looking for, or ask a question:
 
 - *"funny meme about crypto crashing"*
-- *"react hooks tutorial"*
-- *"bitcoin price chart"*
-- *"best AI coding tools"*
+- *"that article about how they scaled their database"*
+- *"What have people said about fine-tuning small models?"*
+- *"videos from @karpathy about tokenizers"*
 
-Searches tweet text, image OCR, visual tags, semantic tags, and categories simultaneously using a full-text search index (FTS5) + Claude semantic reranking. Results are ranked by relevance with AI-generated explanations for each match.
+The AI reads what you saved, not just the first lines of the tweet: the full post, the quoted post, the link card, text inside images and the **full body of X Articles** saved in the local archive. Questions get an answer written from your bookmarks, with numbered citations to the results.
+
+How it works:
+
+1. **Understand** — the AI expands the request into search terms (synonyms, related tools and names), likely categories, and any author, kind of post (X Article, video, image, link) or date it asks for.
+2. **Retrieve** — a local SQLite FTS5 index over everything above (Porter-stemmed, weighted by field) plus category / author / kind / date matches, fused by rank.
+3. **Read & rank** — the AI reads the top candidates (for long articles, the opening plus the passages that mention what you asked) and keeps only the ones that really match, each with a reason.
+
+X Articles only have their title and teaser until they're downloaded to the local archive (log in to X in Settings for full text). The AI Search page shows how many articles are readable in full. Without an AI configured, search still lists keyword matches.
 
 ### 🗺️ Mindmap
 
@@ -346,7 +354,9 @@ siftly/
 │   ├── claude-cli-auth.ts    # Claude CLI OAuth session detection (macOS keychain)
 │   ├── vision-analyzer.ts    # Image analysis + batch semantic tagging
 │   ├── image-context.ts      # Shared image context builder
-│   ├── fts.ts                # SQLite FTS5 full-text search index
+│   ├── ai-search.ts          # AI search: understand → retrieve → read & rank (+ answers)
+│   ├── search-index.ts       # SQLite FTS5 index over posts, quotes, links, full X Articles
+│   ├── search-document.ts    # What's searchable in a bookmark; excerpts for the AI
 │   ├── rawjson-extractor.ts  # Entity extraction from raw tweet JSON
 │   ├── parser.ts             # Multi-format JSON parser
 │   ├── exporter.ts           # CSV, JSON, ZIP export
@@ -377,8 +387,8 @@ ImportJob         — tracks import file status and progress
 Siftly uses Prisma migrations for relational schema changes.
 In development, run `npx prisma migrate dev --name <change-name>` when schema changes.
 For runtime/prod-style startup, apply committed migrations with `npx prisma migrate deploy`.
-FTS5 (`bookmark_fts`) is managed at runtime in [`lib/fts.ts`](./lib/fts.ts), not in `schema.prisma`.
-This is intentional for now because Prisma does not model SQLite virtual table definitions directly.
+The search index (`bookmark_search_doc` + the FTS5 table `bookmark_search_fts`) is managed at runtime in [`lib/search-index.ts`](./lib/search-index.ts), not in `schema.prisma`.
+This is intentional for now because Prisma does not model SQLite virtual table definitions directly. New bookmarks are indexed automatically before each search.
 
 For Prisma command and workflow details, see:
 - https://www.prisma.io/docs/orm/prisma-migrate/workflows/development-and-production
