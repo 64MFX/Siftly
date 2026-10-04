@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
 import { clearSearchIndex } from '@/lib/search-index'
+import { parseLinkCard } from '@/lib/link-card'
 
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 24
@@ -112,6 +113,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       importedAt: bookmark.importedAt.toISOString(),
       archivedAt: bookmark.archivedAt?.toISOString() ?? null,
       archiveStatus: bookmark.archiveStatus,
+      linkCard: parseLinkCard(bookmark.linkCard),
       mediaItems: bookmark.mediaItems.map((m) => ({
         id: m.id,
         type: m.type,

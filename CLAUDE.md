@@ -59,6 +59,7 @@ app/
       login/          # POST open the "Log in to X" browser window, DELETE cancel it
       files/[...path] # Serves archived files (Range support for video)
     bookmarks/        # CRUD + filtering
+      [id]/link-card/ # GET the post's link card (looked up and saved the first time)
     categories/       # Category management
     mindmap/          # Graph data
     stats/            # Dashboard counts
@@ -77,6 +78,8 @@ lib/
   ai-search.ts        # AI search: understand query → FTS + category/author/kind/date candidates → AI reads & ranks
   search-index.ts     # Search index (raw SQL tables bookmark_search_doc + FTS5 bookmark_search_fts), self-syncing
   search-document.ts  # A bookmark's searchable content (post, quote, link card, full X Article from the archive), excerpts
+  link-card.ts        # Link cards (title/description/site/image of the linked page): from snapshots, X syndication, Open Graph (t.co resolved)
+  link-card-store.ts  # resolveLinkCard(): Bookmark.linkCard from archive → stored JSON → network, saved + re-indexed
   rawjson-extractor.ts # Entity extraction from tweet JSON
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
@@ -144,6 +147,7 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Filter X Articles | `GET /api/bookmarks?mediaType=article` (matches the stored `article` object or an `x.com/i/article/` link) |
 | AI search | `POST /api/search/ai` with `{"query"}` → ranked bookmarks with `aiReason`, plus `answer` (citing results as [1], [2]…) for questions. `GET /api/search/ai` = index stats (how many X Articles are readable in full) |
 | Change what search can read | `buildSearchDocument` / `buildSearchRow` in `lib/search-document.ts`; bump `SEARCH_DOC_VERSION` so every bookmark is re-indexed |
+| Link-only posts | `Bookmark.linkCard` (JSON) holds the linked page's card; cards show it, the categorizer and tag enrichment read it (`link` field). Filled by the archiver, the AI pipeline and `GET /api/bookmarks/<id>/link-card` via `resolveLinkCard()` |
 | Delete one bookmark | `DELETE /api/bookmarks/<id or tweetId>`; add `?deleteArchive=true` to remove its archive folder too. Siftly only — it stays bookmarked on X, so a later sync can re-add it |
 
 ## Database

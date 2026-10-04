@@ -4,6 +4,8 @@ import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/cla
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
 import { getActiveModel, getProvider, apiKeySettingFor } from '@/lib/settings'
 import { AIClient, resolveAIClient } from '@/lib/ai-client'
+import { linkContext, parseLinkCard } from '@/lib/link-card'
+import type { LinkCard } from '@/lib/types'
 
 const BATCH_SIZE = 20
 
@@ -123,7 +125,10 @@ interface BookmarkForCategorization {
   semanticTags?: string[]
   hashtags?: string[]
   tools?: string[]
+  /** Preview of the page the post links to */
+  link?: LinkCard
 }
+
 
 interface CategoryAssignment {
   category: string
@@ -155,7 +160,7 @@ export async function seedDefaultCategories(): Promise<void> {
   }
 }
 
-function buildCategorizationPrompt(
+export function buildCategorizationPrompt(
   bookmarks: BookmarkForCategorization[],
   categoryDescriptions: Record<string, string>,
   allSlugs: string[],
@@ -171,6 +176,7 @@ function buildCategorizationPrompt(
     if (b.semanticTags?.length) entry.aiTags = b.semanticTags.slice(0, 20).join(', ')
     if (b.hashtags?.length) entry.hashtags = b.hashtags.slice(0, 10).join(', ')
     if (b.tools?.length) entry.tools = b.tools.join(', ')
+    if (b.link) entry.link = linkContext(b.link)
     return entry
   })
 
@@ -183,9 +189,11 @@ CATEGORIZATION RULES:
 - Assign 1-3 categories per bookmark — only what CLEARLY applies
 - Confidence 0.5-1.0: use 0.9+ for obvious fits, 0.6-0.8 for plausible, 0.5 for borderline
 - Priority: specific categories beat "general" — only use "general" when truly nothing else fits
-- Use ALL signals: tweet text, image analysis, OCR text inside images, hashtags, detected tools, semantic AI tags
+- Use ALL signals: tweet text, linked page, image analysis, OCR text inside images, hashtags, detected tools, semantic AI tags
 
 SIGNAL WEIGHTING (use all, not just text):
+- link field = the page the tweet links to (its title, description and site, as shown in the tweet's link preview). When the text is little more than a link, the linked page IS the content — categorize by what it is about
+- Link to a GitHub repo, package registry, developer docs or a dev tool → dev-tools likely applies
 - Image shows financial chart, price action, wallet UI → finance-crypto (even if tweet text is vague)
 - Image shows code, terminal, GitHub, a dev tool UI → dev-tools
 - Image is clearly a meme format or labeled as humor/satire → funny-memes with high confidence
@@ -351,6 +359,7 @@ export function mapBookmarkForCategorization(b: {
   text: string
   semanticTags: string | null
   entities: string | null
+  linkCard: string | null
   mediaItems: { imageTags: string | null }[]
 }): BookmarkForCategorization {
   const allImageTags = b.mediaItems
@@ -380,6 +389,7 @@ export function mapBookmarkForCategorization(b: {
     semanticTags,
     hashtags,
     tools,
+    link: parseLinkCard(b.linkCard) ?? undefined,
   }
 }
 
@@ -389,6 +399,7 @@ export const BOOKMARK_SELECT = {
   text: true,
   semanticTags: true,
   entities: true,
+  linkCard: true,
   mediaItems: { select: { imageTags: true } },
 } as const
 

@@ -24,6 +24,7 @@ model Bookmark {
   archivedAt      DateTime? // when the tweet/article/media was last saved to the local archive
   archiveStatus   String?   // "complete" | "partial" | "failed" — null means never archived
   archiveError    String?   // warnings from the last archive run (missing media, unreachable X, …)
+  linkCard        String?   // JSON LinkCard: title/description/site/image of the page the post links to
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
 

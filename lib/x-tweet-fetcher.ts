@@ -369,16 +369,24 @@ export class XTweetFetcher {
 
   // ── Syndication ──────────────────────────────────────────────────────────
 
-  private async fetchSyndication(tweetId: string): Promise<{ snapshot: TweetSnapshot | null; raw: unknown }> {
-    const url = `https://cdn.syndication.twimg.com/tweet-result?id=${encodeURIComponent(tweetId)}&lang=en&token=${syndicationToken(tweetId)}`
-    const res = await this.fetchImpl(url, {
-      headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (res.status === 404) return { snapshot: null, raw: null }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const raw = await res.json().catch(() => null)
-    if (!raw || (typeof raw === 'object' && Object.keys(raw as object).length === 0)) return { snapshot: null, raw }
-    return { snapshot: snapshotFromSyndication(raw, tweetId), raw }
+  private fetchSyndication(tweetId: string): Promise<{ snapshot: TweetSnapshot | null; raw: unknown }> {
+    return fetchSyndicationTweet(tweetId, this.fetchImpl)
   }
+}
+
+/** One tweet from X's public syndication API — no login, no GraphQL rate limit. Throws on HTTP errors */
+export async function fetchSyndicationTweet(
+  tweetId: string,
+  fetchImpl: FetchLike = (input, init) => fetch(input, init),
+): Promise<{ snapshot: TweetSnapshot | null; raw: unknown }> {
+  const url = `https://cdn.syndication.twimg.com/tweet-result?id=${encodeURIComponent(tweetId)}&lang=en&token=${syndicationToken(tweetId)}`
+  const res = await fetchImpl(url, {
+    headers: { 'User-Agent': BROWSER_UA, Accept: 'application/json' },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (res.status === 404) return { snapshot: null, raw: null }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const raw = await res.json().catch(() => null)
+  if (!raw || (typeof raw === 'object' && Object.keys(raw as object).length === 0)) return { snapshot: null, raw }
+  return { snapshot: snapshotFromSyndication(raw, tweetId), raw }
 }

@@ -275,3 +275,25 @@ export const flatExportRawJson = JSON.stringify({
     media: [{ type: 'video', media_url_https: 'https://pbs.twimg.com/ext_tw_video_thumb/666/pu/img/only-thumb.jpg', video_info: { variants: [{ content_type: 'video/mp4', bitrate: 0, url: 'https://pbs.twimg.com/ext_tw_video_thumb/666/pu/img/only-thumb.jpg' }] } }],
   },
 })
+
+/** A post that is nothing but a link — X's syndication payload, with the link card X shows */
+export const LINK_TWEET_ID = '1800000000000000001'
+export const linkOnlyTweetSyndication = {
+  __typename: 'Tweet',
+  id_str: LINK_TWEET_ID,
+  text: 'https://t.co/kz411EKFNI',
+  created_at: '2026-08-04T14:22:00.000Z',
+  user: { name: 'AI Builder Club', screen_name: 'aibuilderclub_' },
+  entities: { hashtags: [], urls: [{ url: 'https://t.co/kz411EKFNI', expanded_url: 'https://github.com/liustack/modlens' }], user_mentions: [] },
+  card: {
+    name: 'summary_large_image',
+    url: 'https://t.co/kz411EKFNI',
+    binding_values: {
+      title: { string_value: 'GitHub - liustack/modlens: The first vision plugin for DeepSeek Harness', type: 'STRING' },
+      description: { string_value: 'Plug-in vision for text-only LLMs. Paste an image, get structured JSON evidence.', type: 'STRING' },
+      vanity_url: { string_value: 'github.com', type: 'STRING' },
+      card_url: { string_value: 'https://t.co/kz411EKFNI', type: 'STRING' },
+      thumbnail_image_original: { image_value: { url: 'https://pbs.twimg.com/card_img/9/modlens?format=jpg&name=orig' }, type: 'IMAGE' },
+    },
+  },
+}

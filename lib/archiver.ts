@@ -39,6 +39,8 @@ import {
 } from '@/lib/archive-storage'
 import { renderArchiveHtml, renderArchiveMarkdown } from '@/lib/archive-render'
 import { reindexBookmarks } from '@/lib/search-index'
+import { linkCardFromSnapshot } from '@/lib/link-card'
+import type { LinkCard } from '@/lib/types'
 
 // ── Building one archive (no database access — unit-testable) ───────────────
 
@@ -486,6 +488,8 @@ export interface ArchiveBookmarkResult {
   status: ArchiveStatus
   warnings: string[]
   archivedAt: string | null
+  /** The post's link card, with its archived image — absent when it has none */
+  linkCard?: LinkCard
 }
 
 const store = globalThis as unknown as {
@@ -544,6 +548,8 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
       waitForRateLimit: options.waitForRateLimit,
     })
     const archivedAt = new Date(result.doc.archivedAt)
+    // Bookmark cards and the categorizer show what a link post points at
+    const linkCard = linkCardFromSnapshot(snapshotFromArchiveDoc(result.doc), result.folder)
 
     await prisma.$transaction([
       prisma.bookmark.update({
@@ -552,6 +558,7 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
           archivedAt,
           archiveStatus: result.status,
           archiveError: result.doc.warnings.length > 0 ? result.doc.warnings.join('\n').slice(0, 4000) : null,
+          ...(linkCard ? { linkCard: JSON.stringify(linkCard) } : {}),
         },
       }),
       ...result.mediaUpdates.map((u) =>
@@ -573,6 +580,7 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
       status: result.status,
       warnings: result.doc.warnings,
       archivedAt: archivedAt.toISOString(),
+      ...(linkCard ? { linkCard } : {}),
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState } from 'react'
 import { ExternalLink, Download, FileText, Play, Pencil, X, Check, ImageOff, Bookmark, Globe, HardDrive, HardDriveDownload, Loader2, Trash2 } from 'lucide-react'
-import type { BookmarkWithMedia, Category } from '@/lib/types'
+import type { BookmarkWithMedia, Category, LinkCard } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
 import ArchiveReader from '@/components/archive-reader'
 import DeleteBookmarkDialog from '@/components/delete-bookmark-dialog'
@@ -22,74 +22,105 @@ function stripTcoUrls(text: string): string {
   return text.replace(TCO_REGEX, '').trim()
 }
 
-// ── Link preview ───────────────────────────────────────────────────────────────
+// ── Link card ──────────────────────────────────────────────────────────────────
 
-interface LinkPreviewData {
-  title: string
-  description: string
-  image: string
-  siteName: string
-  domain: string
-  url: string
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
 }
 
-// Module-level cache: url → preview data (or null on error)
-const previewCache = new Map<string, LinkPreviewData | null>()
+function isXHost(host: string): boolean {
+  return /(^|\.)(x|twitter)\.com$/i.test(host)
+}
 
-function LinkPreview({ url, tweetUrl, tweetId, prominent = false }: { url: string; tweetUrl: string; tweetId?: string; prominent?: boolean }) {
-  const [data, setData] = useState<LinkPreviewData | null | 'loading'>('loading')
+/** Preview image: the archived copy first, then the original; hidden if neither loads */
+function LinkCardImage({ card, className }: { card: LinkCard; className: string }) {
+  const local = card.imagePath ? archiveFileUrl(card.imagePath) : null
+  const [src, setSrc] = useState(local ?? card.imageUrl ?? null)
+  if (!src) return null
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      className={className}
+      loading="lazy"
+      onError={() => setSrc(src === local && card.imageUrl ? card.imageUrl : null)}
+    />
+  )
+}
 
-  useEffect(() => {
-    const cacheKey = tweetId ? `${url}:${tweetId}` : url
-    if (previewCache.has(cacheKey)) {
-      setData(previewCache.get(cacheKey) ?? null)
-      return
-    }
-    let cancelled = false
-    fetch(`/api/link-preview?url=${encodeURIComponent(url)}${tweetId ? `&tweetId=${tweetId}` : ''}`)
-      .then((r) => r.json())
-      .then((d: LinkPreviewData & { error?: string }) => {
-        if (cancelled) return
-        const result = d.error || !d.title ? null : d
-        previewCache.set(cacheKey, result)
-        setData(result)
-      })
-      .catch(() => {
-        if (!cancelled) { previewCache.set(cacheKey, null); setData(null) }
-      })
-    return () => { cancelled = true }
-  }, [url, tweetId])
+/** The page a post links to, like X shows it under the post */
+function LinkCardView({ card, prominent = false }: { card: LinkCard; prominent?: boolean }) {
+  const site = card.domain || hostOf(card.url)
+  const imageKey = card.imagePath ?? card.imageUrl
 
-  if (data === 'loading') {
-    return (
-      <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-800/40 h-16 animate-pulse" />
-    )
-  }
-
-  // Fallback: OG fetch failed or returned no title — show a minimal link chip
-  if (!data) {
+  // Prominent mode: vertical layout with large image — used for link-only bookmarks
+  if (prominent) {
     return (
       <a
-        href={tweetUrl}
+        href={card.url}
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
-        className={`${prominent ? 'mt-1' : 'mt-2'} inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all text-xs text-zinc-400 hover:text-zinc-200 max-w-full overflow-hidden`}
+        className="mt-1 flex flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all group/link"
       >
-        <Globe size={11} className="shrink-0 text-zinc-600" />
-        <span className="truncate">{url.replace(/^https?:\/\//, '')}</span>
-        <ExternalLink size={10} className="shrink-0 text-zinc-600 ml-auto" />
+        <LinkCardImage key={imageKey} card={card} className="w-full h-40 object-cover border-b border-zinc-800" />
+        <div className="flex flex-col px-3 py-2.5 min-w-0 gap-1">
+          <p className="text-sm font-semibold text-zinc-200 line-clamp-2 group-hover/link:text-white transition-colors leading-snug">
+            {card.title}
+          </p>
+          {card.description && (
+            <p className="text-xs text-zinc-400 line-clamp-3 leading-relaxed">
+              {card.description}
+            </p>
+          )}
+          <div className="flex items-center gap-1 mt-0.5">
+            <Globe size={10} className="text-zinc-600 shrink-0" />
+            <span className="text-[10px] text-zinc-600 truncate">{site}</span>
+          </div>
+        </div>
       </a>
     )
   }
 
-  // X article pages return useless OG data — show a styled "View article" card instead
-  const isGenericXArticle = (data.domain === 'x.com' || data.domain === 'twitter.com') && !data.image && !data.description
+  return (
+    <a
+      href={card.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      className="mt-2 flex overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all group/link"
+    >
+      <LinkCardImage key={imageKey} card={card} className="w-24 h-full object-cover shrink-0 border-r border-zinc-800" />
+      <div className="flex flex-col justify-center px-3 py-2.5 min-w-0 gap-0.5">
+        <p className="text-xs font-semibold text-zinc-200 line-clamp-1 group-hover/link:text-white transition-colors">
+          {card.title}
+        </p>
+        {card.description && (
+          <p className="text-xs text-zinc-500 line-clamp-2 leading-snug">
+            {card.description}
+          </p>
+        )}
+        <div className="flex items-center gap-1 mt-1">
+          <Globe size={10} className="text-zinc-600 shrink-0" />
+          <span className="text-[10px] text-zinc-600 truncate">{site}</span>
+        </div>
+      </div>
+    </a>
+  )
+}
 
-  const href = data.url || url
-
-  // X article / generic X link with no useful OG data — show a clean "View on X" card
-  if (isGenericXArticle) {
+/** A link without a card: a post on X gets a "View on X" card, anything else a chip */
+function LinkDestination({ url, href, prominent }: { url: string; href: string; prominent: boolean }) {
+  const host = hostOf(url)
+  if (isXHost(host)) {
+    const path = (() => {
+      try { return new URL(url).pathname } catch { return '' }
+    })()
     return (
       <a
         href={href}
@@ -105,51 +136,11 @@ function LinkPreview({ url, tweetUrl, tweetId, prominent = false }: { url: strin
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-zinc-200 group-hover/link:text-white transition-colors">
-            {data.title?.includes('Article') ? 'View Article on X' : data.title || 'View on X'}
+            {path.startsWith('/i/article') ? 'View Article on X' : 'View on X'}
           </p>
-          <p className="text-xs text-zinc-500 truncate">{data.domain}{data.url ? new URL(data.url).pathname : ''}</p>
+          <p className="text-xs text-zinc-500 truncate">{host}{path}</p>
         </div>
         <ExternalLink size={14} className="text-zinc-600 group-hover/link:text-zinc-400 transition-colors shrink-0" />
-      </a>
-    )
-  }
-
-  // Prominent mode: vertical layout with large image — used for link-only bookmarks
-  if (prominent) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
-        className="mt-1 flex flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all group/link"
-      >
-        {data.image && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={data.image}
-            alt=""
-            className="w-full h-40 object-cover border-b border-zinc-800"
-            loading="lazy"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-          />
-        )}
-        <div className="flex flex-col px-3 py-2.5 min-w-0 gap-1">
-          <p className="text-sm font-semibold text-zinc-200 line-clamp-2 group-hover/link:text-white transition-colors leading-snug">
-            {data.title}
-          </p>
-          {data.description && (
-            <p className="text-xs text-zinc-400 line-clamp-3 leading-relaxed">
-              {data.description}
-            </p>
-          )}
-          <div className="flex items-center gap-1 mt-0.5">
-            <Globe size={10} className="text-zinc-600 shrink-0" />
-            <span className="text-[10px] text-zinc-600 truncate">
-              {data.siteName || data.domain}
-            </span>
-          </div>
-        </div>
       </a>
     )
   }
@@ -160,36 +151,54 @@ function LinkPreview({ url, tweetUrl, tweetId, prominent = false }: { url: strin
       target="_blank"
       rel="noopener noreferrer"
       onClick={(e) => e.stopPropagation()}
-      className="mt-2 flex overflow-hidden rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all group/link"
+      className={`${prominent ? 'mt-1' : 'mt-2'} inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-800/70 transition-all text-xs text-zinc-400 hover:text-zinc-200 max-w-full overflow-hidden`}
     >
-      {data.image && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={data.image}
-          alt=""
-          className="w-24 h-full object-cover shrink-0 border-r border-zinc-800"
-          loading="lazy"
-          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-        />
-      )}
-      <div className="flex flex-col justify-center px-3 py-2.5 min-w-0 gap-0.5">
-        <p className="text-xs font-semibold text-zinc-200 line-clamp-1 group-hover/link:text-white transition-colors">
-          {data.title}
-        </p>
-        {data.description && (
-          <p className="text-xs text-zinc-500 line-clamp-2 leading-snug">
-            {data.description}
-          </p>
-        )}
-        <div className="flex items-center gap-1 mt-1">
-          <Globe size={10} className="text-zinc-600 shrink-0" />
-          <span className="text-[10px] text-zinc-600 truncate">
-            {data.siteName || data.domain}
-          </span>
-        </div>
-      </div>
+      <Globe size={11} className="shrink-0 text-zinc-600" />
+      <span className="truncate">{url.replace(/^https?:\/\//, '')}</span>
+      <ExternalLink size={10} className="shrink-0 text-zinc-600 ml-auto" />
     </a>
   )
+}
+
+interface LinkCardLookup {
+  linkCard: LinkCard | null
+  /** Where the link leads, when known */
+  url: string | null
+}
+
+// Module-level cache: bookmark id → looked-up card (found cards are also saved with the bookmark)
+const linkCardCache = new Map<string, LinkCardLookup>()
+
+/** Looks up (and saves) the card of a link post whose card isn't known yet. Key it by bookmark id */
+function LinkPreview({ bookmarkId, url, tweetUrl, prominent = false }: { bookmarkId: string; url: string; tweetUrl: string; prominent?: boolean }) {
+  const [data, setData] = useState<LinkCardLookup | 'loading'>(() => linkCardCache.get(bookmarkId) ?? 'loading')
+
+  useEffect(() => {
+    if (linkCardCache.has(bookmarkId)) return
+    let cancelled = false
+    fetch(`/api/bookmarks/${encodeURIComponent(bookmarkId)}/link-card`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: LinkCardLookup | null) => {
+        const result: LinkCardLookup = { linkCard: d?.linkCard ?? null, url: d?.url ?? null }
+        linkCardCache.set(bookmarkId, result)
+        if (!cancelled) setData(result)
+      })
+      .catch(() => {
+        if (!cancelled) setData({ linkCard: null, url: null })
+      })
+    return () => { cancelled = true }
+  }, [bookmarkId])
+
+  if (data === 'loading') {
+    return (
+      <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-800/40 h-16 animate-pulse" />
+    )
+  }
+  if (data.linkCard) return <LinkCardView card={data.linkCard} prominent={prominent} />
+  // No card: show where the link goes; an unresolved t.co opens the post itself
+  return data.url
+    ? <LinkDestination url={data.url} href={data.url} prominent={prominent} />
+    : <LinkDestination url={url} href={tweetUrl} prominent={prominent} />
 }
 
 // Module-level cache so all cards share the same fetched list
@@ -635,6 +644,7 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
   const [archivedAt, setArchivedAt] = useState(bookmark.archivedAt ?? null)
   const [archiving, setArchiving] = useState(false)
   const [archiveMessage, setArchiveMessage] = useState<string | null>(null)
+  const [linkCard, setLinkCard] = useState<LinkCard | null>(bookmark.linkCard ?? null)
   const [readerOpen, setReaderOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleted, setDeleted] = useState(false)
@@ -651,8 +661,10 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
   // Always strip t.co shortlinks from display text — Twitter appends them to every tweet
   const tcoUrls = bookmark.text.match(TCO_REGEX) ?? []
   const cleanText = stripTcoUrls(bookmark.text)
-  // Show link preview only when there's no real media attached
-  const previewUrl = !hasMedia && tcoUrls.length > 0 ? tcoUrls[tcoUrls.length - 1] : null
+  // Show the link card only when there's no real media attached (X shows one or the other)
+  const showLinkCard = !hasMedia && linkCard !== null
+  // Card not known yet: look it up from the post's link
+  const previewUrl = !hasMedia && !linkCard && tcoUrls.length > 0 ? tcoUrls[tcoUrls.length - 1] : null
 
   const TEXT_LIMIT = 280
   const isLong = cleanText.length > TEXT_LIMIT
@@ -693,6 +705,7 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
       setArchiveStatus(data.status)
       setArchivedAt(data.archivedAt)
       if (Array.isArray(data.mediaItems)) setMediaItems(data.mediaItems)
+      if (data.linkCard) setLinkCard(data.linkCard)
       if (data.status === 'failed') setArchiveMessage(data.warnings?.[0] ?? 'Archiving failed')
       else if (data.status === 'partial') setArchiveMessage('Saved, but some content could not be downloaded')
     } catch (err) {
@@ -736,6 +749,12 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
 
     // Full stored text — keep URLs so truncated threads show the continuation link
     if (bookmark.text) lines.push(bookmark.text)
+
+    if (linkCard) {
+      lines.push('')
+      lines.push(`**Link:** [${linkCard.title}](${linkCard.url})`)
+      if (linkCard.description) lines.push(`> ${linkCard.description.replace(/\s*\n\s*/g, ' ')}`)
+    }
 
     // If text ends with a t.co link the tweet may be part of a longer thread
     if (TCO_REGEX.test(bookmark.text)) {
@@ -856,7 +875,7 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
         </div>
 
         {/* Tweet text */}
-        <div className={`flex-1 ${previewUrl && !displayText ? '' : 'min-h-[4.5rem]'}`}>
+        <div className={`flex-1 ${(showLinkCard || previewUrl) && !displayText ? '' : 'min-h-[4.5rem]'}`}>
           {displayText.length > 0 && (
             <p className="text-sm text-zinc-200 leading-relaxed">
               {displayText}
@@ -884,11 +903,12 @@ export default function BookmarkCard({ bookmark, onDeleted }: BookmarkCardProps)
               )}
             </p>
           )}
-          {!displayText && !firstMedia && !previewUrl && (
+          {!displayText && !firstMedia && !showLinkCard && !previewUrl && (
             <p className="text-xs text-zinc-700 italic">No text content</p>
           )}
+          {showLinkCard && <LinkCardView card={linkCard} prominent={!displayText} />}
           {previewUrl && (
-            <LinkPreview url={previewUrl} tweetUrl={tweetUrl} tweetId={bookmark.tweetId} prominent={!displayText} />
+            <LinkPreview key={bookmark.id} bookmarkId={bookmark.id} url={previewUrl} tweetUrl={tweetUrl} prominent={!displayText} />
           )}
         </div>
 

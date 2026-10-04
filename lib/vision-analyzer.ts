@@ -4,6 +4,8 @@ import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/cla
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
 import { getActiveModel, getProvider } from '@/lib/settings'
 import { AIClient } from '@/lib/ai-client'
+import { linkContext, parseLinkCard } from '@/lib/link-card'
+import type { LinkCard } from '@/lib/types'
 
 export { getActiveModel } from '@/lib/settings'
 
@@ -323,6 +325,8 @@ export interface BookmarkForEnrichment {
   id: string
   text: string
   imageTags: string[] // filtered, non-empty
+  /** Preview of the page the post links to */
+  link?: LinkCard
   entities?: {
     hashtags?: string[]
     urls?: string[]
@@ -345,6 +349,7 @@ function buildEnrichmentPrompt(bookmarks: BookmarkForEnrichment[]): string {
     const entry: Record<string, unknown> = { id: b.id, text: b.text.slice(0, 500) }
     const imgCtx = b.imageTags.map((raw) => buildImageContext(raw)).filter(Boolean).join(' | ')
     if (imgCtx) entry.imageContext = imgCtx
+    if (b.link) entry.linkedPage = linkContext(b.link)
     if (b.entities?.hashtags?.length) entry.hashtags = b.entities.hashtags.slice(0, 8)
     if (b.entities?.tools?.length) entry.tools = b.entities.tools
     if (b.entities?.mentions?.length) entry.mentions = b.entities.mentions.slice(0, 3)
@@ -364,6 +369,7 @@ Rules for tags:
 - NO generic terms: "twitter post", "screenshot", "social media", "content"
 - YES to proper nouns, version numbers, specific concepts
 - Rank most-search-relevant tags first
+- linkedPage is the page the bookmark links to (from its link preview) — tag what that page is about too, and treat it as the main content when the text is just a link
 
 Return ONLY valid JSON, no markdown:
 [{"id":"...","tags":[...],"sentiment":"...","people":[...],"companies":[...]}]
@@ -476,6 +482,7 @@ export async function enrichAllBookmarks(
         id: true,
         text: true,
         entities: true,
+        linkCard: true,
         mediaItems: { select: { imageTags: true } },
       },
     })
@@ -492,7 +499,8 @@ export async function enrichAllBookmarks(
         .map((m) => m.imageTags)
         .filter((t): t is string => t !== null && t !== '' && t !== '{}')
 
-      if (imageTags.length === 0 && b.text.length < 20) {
+      const link = parseLinkCard(b.linkCard) ?? undefined
+      if (imageTags.length === 0 && !link && b.text.length < 20) {
         trivialIds.push(b.id)
         continue
       }
@@ -502,7 +510,7 @@ export async function enrichAllBookmarks(
         try { entities = JSON.parse(b.entities) as typeof entities } catch { /* ignore */ }
       }
 
-      toEnrich.push({ id: b.id, text: b.text, imageTags, entities })
+      toEnrich.push({ id: b.id, text: b.text, imageTags, entities, link })
     }
 
     // Mark trivial bookmarks in one batch

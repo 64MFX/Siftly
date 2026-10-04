@@ -212,6 +212,7 @@ async function cmdShow(args: string[]) {
     archiveStatus: bookmark.archiveStatus,
     archiveDir: bookmark.archivedAt ? path.join(archiveRoot, archiveFolderName(bookmark.tweetId)) : null,
     archiveWarnings: bookmark.archiveError ? bookmark.archiveError.split('\n') : [],
+    linkCard: safeParse(bookmark.linkCard),
     semanticTags: safeParse(bookmark.semanticTags),
     entities: safeParse(bookmark.entities),
     enrichmentMeta: safeParse(bookmark.enrichmentMeta),

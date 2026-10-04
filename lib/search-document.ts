@@ -11,6 +11,7 @@
  * Pure functions only — no database, no filesystem.
  */
 import type { ArchivedArticle, TextSpan } from '@/lib/archive-types'
+import type { LinkCard } from '@/lib/types'
 import { decodeHtmlEntities, type TweetSnapshot } from '@/lib/tweet-snapshot'
 
 /** Bump when the extracted content changes shape — every bookmark is re-indexed */
@@ -40,6 +41,8 @@ export interface SearchSourceBookmark {
   authorName: string
   /** MediaItem types — used when the stored JSON couldn't be parsed */
   mediaTypes?: string[]
+  /** Saved link card (Bookmark.linkCard) — used when the snapshot has none, e.g. it was looked up on the web */
+  linkCard?: LinkCard | null
 }
 
 // ── Building the document ────────────────────────────────────────────────────
@@ -125,7 +128,7 @@ export function buildSearchDocument(snapshot: TweetSnapshot | null, bookmark: Se
   const quote = snapshot?.quote && (snapshot.quote.text || snapshot.quote.authorHandle)
     ? { handle: snapshot.quote.authorHandle ?? '', name: snapshot.quote.authorName ?? '', text: snapshot.quote.text }
     : undefined
-  const card = snapshot?.card
+  const card = snapshot?.card ?? (article ? undefined : bookmark.linkCard ?? undefined)
   const link = card
     ? {
         url: card.url,

@@ -54,6 +54,16 @@ describe('buildSearchDocument', () => {
     expect(doc.kinds.sort()).toEqual(['gif', 'link', 'photo', 'quote', 'video'])
   })
 
+  it('reads the saved link card when the post itself has none', () => {
+    const linkCard = { url: 'https://github.com/liustack/modlens', title: 'liustack/modlens', description: 'Vision for text-only LLMs' }
+    const doc = buildSearchDocument(null, { ...bookmark, text: 'https://t.co/kz411EKFNI', linkCard })
+    expect(doc.link).toEqual({ ...linkCard, domain: 'github.com' })
+    expect(doc.kinds).toContain('link')
+    // X's card from the post wins
+    const stored = buildSearchDocument(snapshotFromStoredRaw(JSON.stringify(noteTweetGraphql), NOTE_TWEET_ID), { ...bookmark, linkCard })
+    expect(stored.link?.title).toBe('foo/bar on GitHub')
+  })
+
   it('falls back to the text saved at import', () => {
     const doc = buildSearchDocument(null, { text: 'Tom &amp; Jerry', authorHandle: 'unknown', authorName: 'Unknown', mediaTypes: ['video'] })
     expect(doc).toMatchObject({ text: 'Tom & Jerry', author: { handle: '', name: 'Unknown' }, kinds: ['video'] })
