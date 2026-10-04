@@ -1,4 +1,8 @@
+import fs from 'fs'
+import { Readable } from 'stream'
 import { NextRequest, NextResponse } from 'next/server'
+import prisma from '@/lib/db'
+import { contentTypeForPath, resolveLocalPath } from '@/lib/media-archive'
 
 const ALLOWED_HOSTS = new Set([
   'pbs.twimg.com',
@@ -31,6 +35,48 @@ function getFilename(urlStr: string, contentType: string): string {
   return 'media.bin'
 }
 
+/** Serve a locally archived copy (with Range support) if one exists. */
+async function serveLocal(request: NextRequest, mediaUrl: string, isDownload: boolean): Promise<NextResponse | null> {
+  const item = await prisma.mediaItem.findFirst({
+    where: { url: mediaUrl, localPath: { not: null } },
+    select: { localPath: true },
+  })
+  const abs = item?.localPath ? resolveLocalPath(item.localPath) : null
+  if (!abs) return null
+  const stat = await fs.promises.stat(abs).catch(() => null)
+  if (!stat) return null
+
+  const contentType = contentTypeForPath(abs)
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'Cache-Control': 'public, max-age=86400',
+    'Accept-Ranges': 'bytes',
+  }
+  if (isDownload) headers['Content-Disposition'] = `attachment; filename="${getFilename(mediaUrl, contentType)}"`
+
+  let start = 0
+  let end = stat.size - 1
+  let status = 200
+  const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get('range') ?? '')
+  if (match && (match[1] || match[2])) {
+    if (match[1]) {
+      start = Number(match[1])
+      if (match[2]) end = Math.min(Number(match[2]), end)
+    } else {
+      start = Math.max(stat.size - Number(match[2]), 0)
+    }
+    if (start > end) {
+      return new NextResponse(null, { status: 416, headers: { 'Content-Range': `bytes */${stat.size}` } })
+    }
+    status = 206
+    headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`
+  }
+  headers['Content-Length'] = String(end - start + 1)
+
+  const stream = Readable.toWeb(fs.createReadStream(abs, { start, end })) as ReadableStream
+  return new NextResponse(stream, { status, headers })
+}
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
   const mediaUrl = searchParams.get('url')
@@ -42,6 +88,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   if (!isAllowedUrl(mediaUrl)) {
     return NextResponse.json({ error: 'URL not allowed' }, { status: 403 })
+  }
+
+  try {
+    const local = await serveLocal(request, mediaUrl, isDownload)
+    if (local) return local
+  } catch (err) {
+    console.error('Local media read error:', err)
   }
 
   try {
