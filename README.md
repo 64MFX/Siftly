@@ -25,7 +25,7 @@ Siftly turns your Twitter/X bookmarks into a **searchable, categorized, visual k
 It runs a **4-stage AI pipeline** on your bookmarks:
 
 ```
-📥 Import (built-in bookmarklet or console script — no extensions needed)
+📥 Import (Sync from X, or the built-in bookmarklet / console script — no extensions needed)
     ↓
 🏷️  Entity Extraction   — mines hashtags, URLs, mentions, and 100+ known tools from raw tweet data (free, zero API calls)
     ↓
@@ -122,27 +122,38 @@ New accounts include $5 free credit — enough for thousands of bookmarks at Hai
 
 ## Importing Your Bookmarks
 
-Siftly has **built-in import tools** — no browser extensions required. Go to the **Import** page and choose either method:
+Siftly has **built-in import tools** — no browser extensions required. Go to the **Import** page and choose a method:
 
-### Method A — Bookmarklet *(Recommended)*
+### Method A — Sync from X *(Recommended)*
 
-1. Go to **Import** in the Siftly sidebar
+Siftly reads your bookmarks straight from X with your X login, the way x.com's own Bookmarks page does — newest first.
+
+1. Go to **Import** in the Siftly sidebar — the **Sync from X** tab is open
+2. Click **Log in to X** if you haven't yet: Siftly opens Chrome / Edge / Brave in a separate window, you log in on x.com itself, and the window closes by itself (Siftly never sees your password). Or paste your `auth_token` + `ct0` cookies in **Settings → X Login**. It's the same login the Local Archive uses for full X Articles.
+3. Click **Sync all my bookmarks**
+
+The **first sync reads your whole bookmark list**, so anything an earlier import missed is filled in — including bookmarks imported earlier with an "unknown" author or a cut-off long post, which get completed from X's data. After that, **Sync new bookmarks** reads your newest bookmarks and stops once it reaches the ones Siftly already has (a few already-imported posts among the new ones — e.g. a post you bookmarked again — don't stop it). **Check all bookmarks instead** reads the whole list again any time.
+
+It waits out X's rate limit by itself, can be stopped any time (what it imported so far stays), and hands new bookmarks straight to AI categorization. From the command line: `npx tsx cli/siftly.ts sync` (`--all` to check every bookmark).
+
+### Method B — Bookmarklet
+
+1. Go to **Import** → **Bookmarklet**
 2. Drag the **"Export X Bookmarks"** link to your browser's bookmark bar
-   *(or right-click the bookmark bar → Add Bookmark → paste the URL)*
-3. Go to [x.com/i/bookmarks](https://x.com/i/bookmarks) while logged in to X
-4. Click **"Export X Bookmarks"** in your bookmark bar — a purple button appears on the page
-5. Click **"▶ Auto-scroll"** — the tool scrolls through and captures all your bookmarks automatically
-6. When complete, click the purple **"Export N bookmarks"** button — `bookmarks.json` downloads
-7. Back in Siftly → **Import** → drop or upload the file
+   *(or right-click the bookmark bar → Add Bookmark → paste the URL)*. Added it before? Replace it — the old one missed your newest bookmarks.
+3. Open [x.com](https://x.com/i/bookmarks) while logged in to X (any page)
+4. Click **"Export X Bookmarks"** — a panel shows the progress while it reads your bookmarks from the newest down, 100 at a time, no scrolling needed
+5. When it reaches the oldest, `x-bookmarks-<date>.json` downloads
+6. Back in Siftly → **Import** → drop or upload the file
 
-### Method B — Browser Console Script
+### Method C — Browser Console Script
 
-1. Go to [x.com/i/bookmarks](https://x.com/i/bookmarks) while logged in to X
+The same script as the bookmarklet, pasted into the browser console:
+
+1. Open [x.com](https://x.com/i/bookmarks) while logged in to X
 2. Open DevTools: press `F12` (Windows/Linux) or `⌘⌥J` (Mac), then go to the **Console** tab
-3. Copy the console script from the Siftly Import page, paste it into the console, and press Enter
-4. Click **"▶ Auto-scroll"** and wait for all bookmarks to be captured
-5. Click the export button — `bookmarks.json` downloads automatically
-6. Back in Siftly → **Import** → upload the file
+3. Copy the console script from the Siftly Import page, paste it into the console, and press Enter (Chrome may ask you to type `allow pasting` first)
+4. When the download finishes, go back to Siftly → **Import** → upload the file
 
 ### Re-importing
 
@@ -326,6 +337,7 @@ siftly/
 │   │   ├── categorize/       # 4-stage AI pipeline (start, status, stop)
 │   │   ├── export/           # CSV, JSON, ZIP export
 │   │   ├── import/           # JSON file import with dedup + auto-pipeline trigger
+│   │   │   ├── x-sync/       # Sync from X: start (POST), progress (GET), stop (DELETE)
 │   │   │   ├── bookmarklet/  # Bookmarklet-specific import endpoint
 │   │   │   └── twitter/      # Twitter-specific import endpoint
 │   │   ├── link-preview/     # Server-side OG metadata scraper

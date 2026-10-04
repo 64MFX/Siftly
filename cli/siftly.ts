@@ -28,6 +28,7 @@ import {
 import { archiveFolderName } from '@/lib/archive-storage'
 import { getArchiveLocation, getArchiveRoot, setArchiveDir } from '@/lib/archive-location'
 import { getXSessionStatus } from '@/lib/x-session'
+import { runXSync, type XSyncMode } from '@/lib/x-bookmark-sync'
 import path from 'path'
 
 // ─── Output ──────────────────────────────────────────────────────────────────
@@ -408,6 +409,27 @@ async function cmdArchive(args: string[]) {
   })
 }
 
+async function cmdSync(args: string[]) {
+  const { flags } = parseArgs(args)
+  // auto: the whole list on the first sync, then only down to what Siftly already has
+  const mode: XSyncMode = flags.all === 'true' ? 'all' : flags.new === 'true' ? 'new' : 'auto'
+  const result = await runXSync({
+    mode,
+    onProgress: (p) => {
+      if (isTTY && p.pages > 0) {
+        process.stderr.write(`\rPage ${p.pages}: ${p.checked} checked, ${p.imported} new, ${p.alreadyHad} already in Siftly`)
+      }
+    },
+    onRateLimit: (until) => {
+      process.stderr.write(`\nX rate limit reached — waiting until ${new Date(until).toLocaleTimeString()}…\n`)
+      return waitForRateLimitReset(until, () => false)
+    },
+  })
+  if (isTTY) process.stderr.write('\n')
+  output(result)
+  if (result.error) process.exitCode = 1
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function safeParse(json: string | null): unknown {
@@ -454,6 +476,7 @@ const COMMANDS: Record<string, string> = {
   categories: 'categories                List categories with counts',
   stats: 'stats                     Library statistics',
   archive: 'archive [--mode pending|retry|all] [--id <id|tweetId>] [--limit N] [--offline]   Save bookmarks locally',
+  sync: 'sync [--all] [--new]       Import new bookmarks from X with the login from Settings → X Login (the first sync reads them all; --all always does)',
   'archive-status': 'archive-status            Local archive statistics',
   'archive-dir': 'archive-dir [<folder>] [--no-move] [--reset]   Show or change the archive folder (moves saved files unless --no-move)',
 }
@@ -502,6 +525,9 @@ async function main() {
         break
       case 'archive-status':
         await cmdArchiveStatus()
+        break
+      case 'sync':
+        await cmdSync(rest)
         break
       case 'archive-dir':
         await cmdArchiveDir(rest)

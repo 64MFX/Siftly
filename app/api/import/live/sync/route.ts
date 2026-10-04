@@ -1,27 +1,22 @@
 import { NextResponse } from 'next/server'
-import prisma from '@/lib/db'
 import { syncBookmarks, isSyncing } from '@/lib/x-sync'
+import { getXCredentials } from '@/lib/x-session'
 
-/** POST — trigger a manual sync using stored credentials */
+/** POST — sync bookmarks from X now with the saved X login, and wait for it */
 export async function POST() {
   if (isSyncing()) {
     return NextResponse.json({ error: 'A sync is already in progress' }, { status: 409 })
   }
 
   try {
-    const [authSetting, ct0Setting] = await Promise.all([
-      prisma.setting.findUnique({ where: { key: 'x_auth_token' } }),
-      prisma.setting.findUnique({ where: { key: 'x_ct0' } }),
-    ])
-
-    if (!authSetting?.value || !ct0Setting?.value) {
+    if (!(await getXCredentials())) {
       return NextResponse.json(
-        { error: 'X credentials not configured. Save your auth_token and ct0 first.' },
+        { error: 'X credentials not configured. Log in to X in Settings → X Login first.' },
         { status: 400 },
       )
     }
 
-    const result = await syncBookmarks(authSetting.value, ct0Setting.value)
+    const result = await syncBookmarks()
     return NextResponse.json(result)
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Sync failed'

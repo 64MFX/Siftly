@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { importedTweetFromGraphql } from '@/lib/x-tweet-import'
 
 const ALLOWED_ORIGINS = new Set(['https://x.com', 'https://twitter.com'])
 
@@ -18,98 +19,9 @@ export async function OPTIONS(request: NextRequest) {
   return new NextResponse(null, { status: 204, headers: corsHeaders(request) })
 }
 
-interface MediaVariant {
-  content_type?: string
-  bitrate?: number
-  url?: string
-}
-
-interface MediaEntity {
-  type?: string
-  media_url_https?: string
-  video_info?: { variants?: MediaVariant[] }
-}
-
-interface ArticleResult {
-  title?: string
-  preview_image?: { url?: string }
-  cover_media?: { media_info?: { original_img_url?: string } }
-  content?: string
-}
-
-interface TweetResult {
-  __typename?: string
-  rest_id?: string
-  legacy?: {
-    full_text?: string
-    created_at?: string
-    extended_entities?: { media?: MediaEntity[] }
-    entities?: { media?: MediaEntity[] }
-  }
-  core?: {
-    user_results?: {
-      result?: { legacy?: { screen_name?: string; name?: string } }
-    }
-  }
-  note_tweet?: { note_tweet_results?: { result?: { text?: string } } }
-  article?: { article_results?: { result?: ArticleResult } }
-  tweet?: TweetResult
-}
-
-function bestVideoUrl(variants: MediaVariant[]): string | null {
-  return (
-    variants
-      .filter((v) => v.content_type === 'video/mp4' && v.url)
-      .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0]?.url ?? null
-  )
-}
-
-function tweetFullText(tweet: TweetResult): string {
-  if (tweet.note_tweet?.note_tweet_results?.result?.text) {
-    return tweet.note_tweet.note_tweet_results.result.text
-  }
-  const article = tweet.article?.article_results?.result
-  if (article) {
-    const parts: string[] = []
-    if (article.title) parts.push(article.title)
-    if (article.content) parts.push(article.content)
-    if (parts.length > 0) return parts.join('\n\n')
-  }
-  return tweet.legacy?.full_text ?? ''
-}
-
-function extractMedia(tweet: TweetResult) {
-  const entities =
-    tweet.legacy?.extended_entities?.media ?? tweet.legacy?.entities?.media ?? []
-  const results = entities
-    .map((m) => {
-      const thumb = m.media_url_https ?? ''
-      if (m.type === 'video' || m.type === 'animated_gif') {
-        const url = bestVideoUrl(m.video_info?.variants ?? []) ?? thumb
-        if (!url) return null
-        return { type: m.type === 'animated_gif' ? 'gif' : 'video', url, thumbnailUrl: thumb }
-      }
-      if (!thumb) return null
-      return { type: 'photo' as const, url: thumb, thumbnailUrl: thumb }
-    })
-    .filter(Boolean) as { type: string; url: string; thumbnailUrl: string }[]
-
-  if (results.length === 0) {
-    const article = tweet.article?.article_results?.result
-    const coverUrl =
-      article?.cover_media?.media_info?.original_img_url ??
-      article?.preview_image?.url
-    if (coverUrl) {
-      results.push({ type: 'photo', url: coverUrl, thumbnailUrl: coverUrl })
-    }
-  }
-
-  return results
-}
-
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const cors = corsHeaders(request)
-  let body: { tweets?: TweetResult[]; source?: string } = {}
+  let body: { tweets?: unknown[]; source?: string } = {}
   try {
     body = await request.json()
   } catch {
@@ -125,15 +37,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let imported = 0
   let skipped = 0
 
-  for (let tweet of tweets) {
-    // Unwrap TweetWithVisibilityResults
-    if (tweet.__typename === 'TweetWithVisibilityResults' && tweet.tweet) {
-      tweet = tweet.tweet
-    }
-    if (!tweet.rest_id) continue
+  for (const raw of tweets) {
+    // GraphQL tweet results, as x.com's own timelines receive them
+    const tweet = importedTweetFromGraphql(raw)
+    if (!tweet) continue
 
     const exists = await prisma.bookmark.findUnique({
-      where: { tweetId: tweet.rest_id },
+      where: { tweetId: tweet.tweetId },
       select: { id: true },
     })
 
@@ -142,33 +52,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       continue
     }
 
-    const userLegacy = tweet.core?.user_results?.result?.legacy ?? {}
-    const media = extractMedia(tweet)
-
-    const created = await prisma.bookmark.create({
+    await prisma.bookmark.create({
       data: {
-        tweetId: tweet.rest_id,
-        text: tweetFullText(tweet),
-        authorHandle: userLegacy.screen_name ?? 'unknown',
-        authorName: userLegacy.name ?? 'Unknown',
-        tweetCreatedAt: tweet.legacy?.created_at
-          ? new Date(tweet.legacy.created_at)
-          : null,
-        rawJson: JSON.stringify(tweet),
+        tweetId: tweet.tweetId,
+        text: tweet.text,
+        authorHandle: tweet.authorHandle,
+        authorName: tweet.authorName,
+        tweetCreatedAt: tweet.tweetCreatedAt,
+        rawJson: tweet.rawJson,
         source,
+        ...(tweet.media.length > 0 ? { mediaItems: { create: tweet.media } } : {}),
       },
     })
-
-    if (media.length > 0) {
-      await prisma.mediaItem.createMany({
-        data: media.map((m) => ({
-          bookmarkId: created.id,
-          type: m.type,
-          url: m.url,
-          thumbnailUrl: m.thumbnailUrl ?? null,
-        })),
-      })
-    }
 
     imported++
   }

@@ -1707,7 +1707,7 @@ function XLoginSection({ onToast }: { onToast: (t: Toast) => void }) {
       <Section
         icon={XLogo}
         title="X Login"
-        description="Log in to your X account so the Local Archive can download what X only shows to logged-in users — above all the full text and images of X Articles."
+        description="Log in to your X account so Siftly can sync your bookmarks straight from X (Import → Sync from X), and the Local Archive can download what X only shows to logged-in users — above all the full text and images of X Articles."
       >
         {!status ? (
           loadError

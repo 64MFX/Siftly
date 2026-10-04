@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { Upload, CheckCircle, ChevronRight, Loader2, Copy, Check, ExternalLink, Sparkles, Eye, Tag, Brain, Layers, StopCircle, RefreshCw, Clock, KeyRound, Trash2, AlertCircle, User, LogOut } from 'lucide-react'
 import * as Progress from '@radix-ui/react-progress'
+import { X_EXPORT_BOOKMARKLET, X_EXPORT_SCRIPT } from '@/lib/x-export-script'
+import type { XSyncProgress, XSyncResult } from '@/lib/x-bookmark-sync'
 
 type Step = 1 | 2 | 3
-type Method = 'bookmarklet' | 'console' | 'live'
+type Method = 'sync' | 'bookmarklet' | 'console' | 'api'
 
 interface ImportResult {
   imported: number
@@ -62,294 +64,6 @@ const STAGE_INFO: Record<NonNullable<Stage>, { label: string; icon: React.ReactN
   },
 }
 
-// ── Bookmarklet script (captures Twitter/X bookmark API responses as you scroll) ──
-
-const BOOKMARKLET_SCRIPT = `(async function(){
-  if(!location.hostname.includes('twitter.com')&&!location.hostname.includes('x.com')){
-    showToast('\u274c Please navigate to x.com/i/bookmarks or x.com/username/likes first','#ef4444');return;
-  }
-  var isLikes=location.pathname.includes('/likes');
-  var source=isLikes?'like':'bookmark';
-  var label=isLikes?'likes':'bookmarks';
-  function showToast(msg,bg){
-    var t=document.createElement('div');t.textContent=msg;
-    Object.assign(t.style,{position:'fixed',bottom:'24px',left:'50%',transform:'translateX(-50%)',
-      zIndex:'2147483647',padding:'10px 18px',background:bg||'#1e1b4b',color:'#fff',
-      border:'1px solid rgba(255,255,255,0.15)',borderRadius:'8px',
-      fontSize:'13px',fontWeight:'600',fontFamily:'system-ui,sans-serif',
-      boxShadow:'0 4px 20px rgba(0,0,0,0.6)',whiteSpace:'nowrap',transition:'opacity 0.3s'});
-    document.body.appendChild(t);
-    setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove();},300);},4000);
-  }
-  var all=[],seen=new Set();
-  var btn=document.createElement('button');
-  btn.textContent='Scroll, then Export 0 '+label+' \u2192';
-  Object.assign(btn.style,{position:'fixed',top:'12px',right:'12px',zIndex:'2147483647',
-    padding:'10px 18px',background:'#4f46e5',color:'#fff',border:'none',borderRadius:'8px',
-    cursor:'pointer',fontSize:'14px',fontWeight:'700',
-    boxShadow:'0 0 0 2px rgba(99,102,241,.4),0 4px 16px rgba(0,0,0,.4)',
-    fontFamily:'system-ui,sans-serif'});
-  function addTweet(t){
-    if(!t||!t.rest_id||seen.has(t.rest_id))return;
-    seen.add(t.rest_id);
-    var leg=t.legacy||{},usr=(t.core&&t.core.user_results&&t.core.user_results.result&&t.core.user_results.result.legacy)||{};
-    var rawMedia=(leg.extended_entities&&leg.extended_entities.media)||(leg.entities&&leg.entities.media)||[];
-    var media=rawMedia.map(function(m){
-      var thumb=m.media_url_https||'';
-      if(m.type==='video'||m.type==='animated_gif'){
-        var variants=m.video_info&&m.video_info.variants||[];
-        var mp4s=variants.filter(function(v){return v.content_type==='video/mp4'&&v.url;}).sort(function(a,b){return(b.bitrate||0)-(a.bitrate||0);});
-        if(mp4s.length)return{type:m.type==='animated_gif'?'gif':'video',url:mp4s[0].url};
-        // No mp4 — degrade to photo so thumbnail shows correctly (actual video not available)
-        if(thumb)return{type:'photo',url:thumb};
-        return null;
-      }
-      return thumb?{type:'photo',url:thumb}:null;
-    }).filter(Boolean);
-    all.push({id:t.rest_id,author:usr.name||'Unknown',handle:'@'+(usr.screen_name||'unknown'),
-      avatar:usr.profile_image_url_https||'',timestamp:leg.created_at||'',
-      text:leg.full_text||leg.text||'',media:media,
-      hashtags:(leg.entities&&leg.entities.hashtags||[]).map(function(h){return h.text;}),
-      urls:(leg.entities&&leg.entities.urls||[]).map(function(u){return u.expanded_url;}).filter(Boolean)});
-    btn.textContent='Export '+all.length+' '+label+' \u2192';
-  }
-  function isTweetObj(o){return o&&typeof o==='object'&&typeof o.rest_id==='string'&&o.rest_id.length>5&&(o.legacy||o.core);}
-  function unwrapTweet(t){
-    if(!t)return null;
-    if(t.__typename==='TweetWithVisibilityResults'||t.__typename==='TweetWithVisibilityResult')return t.tweet||t;
-    return t;
-  }
-  function deepFindTweets(obj,depth){
-    if(!obj||typeof obj!=='object'||depth>12)return;
-    if(Array.isArray(obj)){obj.forEach(function(item){deepFindTweets(item,depth+1);});return;}
-    if(obj.tweet_results&&obj.tweet_results.result){var tw=unwrapTweet(obj.tweet_results.result);if(tw)addTweet(tw);}
-    else if(isTweetObj(obj)){addTweet(unwrapTweet(obj));}
-    for(var k in obj){if(Object.prototype.hasOwnProperty.call(obj,k)&&k!=='quoted_status_result'){deepFindTweets(obj[k],depth+1);}}
-  }
-  function processData(d){deepFindTweets(d,0);}
-  var autoBtn=document.createElement('button');
-  function doExport(){
-    window.fetch=origFetch;
-    XMLHttpRequest.prototype.open=origOpen;
-    XMLHttpRequest.prototype.send=origSend;
-    if(!all.length){showToast('\u26a0\ufe0f No '+label+' captured \u2014 scroll or use Auto-scroll first!','#92400e');return;}
-    [btn,autoBtn].forEach(function(el){try{document.body.removeChild(el);}catch(e){}});
-    var blob=new Blob([JSON.stringify({bookmarks:all,source:source},null,2)],{type:'application/json'});
-    var url=URL.createObjectURL(blob);
-    var a=document.createElement('a');a.href=url;a.download=source+'s.json';a.click();
-    setTimeout(function(){URL.revokeObjectURL(url);},1000);
-    showToast('\u2705 Downloaded '+all.length+' '+label+'! Upload to Siftly.','#14532d');
-  }
-  btn.onclick=doExport;
-  autoBtn.textContent='\u25b6 Auto-scroll';
-  Object.assign(autoBtn.style,{position:'fixed',top:'58px',right:'12px',zIndex:'2147483647',
-    padding:'8px 14px',background:'#18181b',color:'#a1a1aa',
-    border:'1px solid #3f3f46',borderRadius:'8px',
-    cursor:'pointer',fontSize:'12px',fontWeight:'600',fontFamily:'system-ui,sans-serif'});
-  var autoScrolling=false;
-  function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
-  async function runAutoScroll(){
-    var stagnant=0,lastCount=all.length;
-    while(autoScrolling){
-      window.scrollTo(0,document.documentElement.scrollHeight);
-      var col=document.querySelector('[data-testid="primaryColumn"]');
-      if(col)col.scrollTo(0,col.scrollHeight);
-      await sleep(900);
-      if(all.length>lastCount){stagnant=0;lastCount=all.length;}
-      else{
-        stagnant++;
-        if(stagnant>=8){
-          window.scrollTo(0,document.documentElement.scrollHeight);
-          await sleep(2000);
-          if(all.length===lastCount){
-            autoScrolling=false;
-            autoBtn.textContent='\u2705 Done \u2014 '+all.length+' captured';
-            autoBtn.style.background='#14532d';autoBtn.style.color='#86efac';autoBtn.style.border='1px solid #166534';
-            showToast('\u2705 Auto-scroll complete! '+all.length+' '+label+' ready. Click Export.','#14532d');
-            return;
-          }
-          stagnant=0;
-        }
-      }
-    }
-    autoBtn.textContent='\u25b6 Auto-scroll';
-    autoBtn.style.background='#18181b';autoBtn.style.color='#a1a1aa';autoBtn.style.border='1px solid #3f3f46';
-  }
-  autoBtn.onclick=function(){
-    if(autoScrolling){autoScrolling=false;return;}
-    autoScrolling=true;
-    autoBtn.textContent='\u23f8 Stop';
-    autoBtn.style.background='#4f46e5';autoBtn.style.color='#fff';autoBtn.style.border='none';
-    runAutoScroll();
-  };
-  document.body.appendChild(btn);
-  document.body.appendChild(autoBtn);
-  function isApiUrl(u){return u.includes('/graphql/')||u.includes('/i/api/')||u.includes('/2/timeline');}
-  var origFetch=window.fetch;
-  window.fetch=async function(){
-    var r=await origFetch.apply(this,arguments);
-    try{
-      var u=arguments[0] instanceof Request?arguments[0].url:String(arguments[0]);
-      if(isApiUrl(u)){var ct=r.headers.get('content-type')||'';if(ct.includes('json')){var d=await r.clone().json();processData(d);}}
-    }catch(ex){}
-    return r;
-  };
-  var origOpen=XMLHttpRequest.prototype.open,origSend=XMLHttpRequest.prototype.send,xhrUrls=new WeakMap();
-  XMLHttpRequest.prototype.open=function(){xhrUrls.set(this,String(arguments[1]||''));return origOpen.apply(this,arguments);};
-  XMLHttpRequest.prototype.send=function(){
-    var xhr=this,u=xhrUrls.get(xhr)||'';
-    if(isApiUrl(u)){xhr.addEventListener('load',function(){try{processData(JSON.parse(xhr.responseText));}catch(ex){}});}
-    return origSend.apply(this,arguments);
-  };
-  showToast('\u2705 Active! Scroll your '+label+' \u2014 counter updates above.','#1e1b4b');
-})();`
-
-const BOOKMARKLET_HREF = `javascript:${encodeURIComponent(BOOKMARKLET_SCRIPT)}`
-
-const CONSOLE_SCRIPT = `(async function() {
-  if (!location.hostname.includes('twitter.com') && !location.hostname.includes('x.com')) {
-    alert('Run this on x.com/i/bookmarks or x.com/username/likes'); return;
-  }
-  const isLikes = location.pathname.includes('/likes');
-  const source = isLikes ? 'like' : 'bookmark';
-  const label = isLikes ? 'likes' : 'bookmarks';
-  const all = [], seen = new Set();
-  function addTweet(t) {
-    if (!t?.rest_id || seen.has(t.rest_id)) return;
-    seen.add(t.rest_id);
-    const leg = t.legacy ?? {}, usr = t.core?.user_results?.result?.legacy ?? {};
-    const media = (leg.extended_entities?.media ?? leg.entities?.media ?? []).map(m => {
-      const thumb = m.media_url_https ?? '';
-      if (m.type === 'video' || m.type === 'animated_gif') {
-        const mp4s = (m.video_info?.variants ?? []).filter(v => v.content_type === 'video/mp4' && v.url)
-          .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
-        if (mp4s.length) return { type: m.type === 'animated_gif' ? 'gif' : 'video', url: mp4s[0].url };
-        // No mp4 — degrade to photo so thumbnail shows correctly (actual video not available)
-        return thumb ? { type: 'photo', url: thumb } : null;
-      }
-      return thumb ? { type: 'photo', url: thumb } : null;
-    }).filter(Boolean);
-    all.push({
-      id: t.rest_id, author: usr.name ?? 'Unknown', handle: '@' + (usr.screen_name ?? 'unknown'),
-      timestamp: leg.created_at ?? '', text: leg.full_text ?? leg.text ?? '', media,
-      hashtags: (leg.entities?.hashtags ?? []).map(h => h.text),
-      urls: (leg.entities?.urls ?? []).map(u => u.expanded_url).filter(Boolean)
-    });
-    btn.textContent = \`Export \${all.length} \${label} →\`;
-  }
-  function isTweetObj(o) { return o && typeof o === 'object' && typeof o.rest_id === 'string' && o.rest_id.length > 5 && (o.legacy || o.core); }
-  function unwrapTweet(t) {
-    if (!t) return null;
-    if (t.__typename === 'TweetWithVisibilityResults' || t.__typename === 'TweetWithVisibilityResult') return t.tweet ?? t;
-    return t;
-  }
-  function deepFindTweets(obj, depth = 0) {
-    if (!obj || typeof obj !== 'object' || depth > 12) return;
-    if (Array.isArray(obj)) { obj.forEach(item => deepFindTweets(item, depth + 1)); return; }
-    if (obj.tweet_results?.result) { const tw = unwrapTweet(obj.tweet_results.result); if (tw) addTweet(tw); }
-    else if (isTweetObj(obj)) { addTweet(unwrapTweet(obj)); }
-    for (const k of Object.keys(obj)) { if (k !== 'quoted_status_result') deepFindTweets(obj[k], depth + 1); }
-  }
-  function processData(d) { deepFindTweets(d, 0); }
-  const btn = document.createElement('button');
-  btn.textContent = 'Scroll then click to Export →';
-  Object.assign(btn.style, {
-    position: 'fixed', top: '12px', right: '12px', zIndex: '2147483647',
-    padding: '10px 18px', background: '#4f46e5', color: '#fff',
-    border: 'none', borderRadius: '8px', cursor: 'pointer',
-    fontSize: '14px', fontWeight: '700',
-    boxShadow: '0 0 0 2px rgba(99,102,241,.4),0 4px 16px rgba(0,0,0,.4)',
-    fontFamily: 'system-ui,sans-serif'
-  });
-  function doExport() {
-    window.fetch = origFetch;
-    XMLHttpRequest.prototype.open = origOpen;
-    XMLHttpRequest.prototype.send = origSend;
-    [btn, autoBtn].forEach(el => { try { document.body.removeChild(el); } catch(e) {} });
-    if (!all.length) { alert(\`No \${label} captured. Use Auto-scroll or scroll manually first.\`); return; }
-    const blob = new Blob([JSON.stringify({ bookmarks: all, source }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = \`\${source}s.json\`; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    console.log(\`✅ Downloaded \${all.length} \${label}!\`);
-  }
-  btn.onclick = doExport;
-  const autoBtn = document.createElement('button');
-  autoBtn.textContent = '▶ Auto-scroll';
-  Object.assign(autoBtn.style, {
-    position: 'fixed', top: '58px', right: '12px', zIndex: '2147483647',
-    padding: '8px 14px', background: '#18181b', color: '#a1a1aa',
-    border: '1px solid #3f3f46', borderRadius: '8px', cursor: 'pointer',
-    fontSize: '12px', fontWeight: '600', fontFamily: 'system-ui,sans-serif'
-  });
-  let autoScrolling = false;
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  async function runAutoScroll() {
-    let stagnant = 0, lastCount = all.length;
-    while (autoScrolling) {
-      window.scrollTo(0, document.documentElement.scrollHeight);
-      const col = document.querySelector('[data-testid="primaryColumn"]');
-      col?.scrollTo(0, col.scrollHeight);
-      await sleep(900);
-      if (all.length > lastCount) { stagnant = 0; lastCount = all.length; }
-      else {
-        stagnant++;
-        if (stagnant >= 8) {
-          window.scrollTo(0, document.documentElement.scrollHeight);
-          await sleep(2000);
-          if (all.length === lastCount) {
-            autoScrolling = false;
-            autoBtn.textContent = \`✅ Done — \${all.length} captured\`;
-            autoBtn.style.cssText += ';background:#14532d;color:#86efac;border:1px solid #166534';
-            console.log(\`✅ Auto-scroll complete! \${all.length} \${label} ready. Click Export.\`);
-            return;
-          }
-          stagnant = 0;
-        }
-      }
-    }
-    autoBtn.textContent = '▶ Auto-scroll';
-    autoBtn.style.background = '#18181b'; autoBtn.style.color = '#a1a1aa'; autoBtn.style.border = '1px solid #3f3f46';
-  }
-  autoBtn.onclick = function() {
-    if (autoScrolling) { autoScrolling = false; return; }
-    autoScrolling = true;
-    autoBtn.textContent = '⏸ Stop';
-    autoBtn.style.background = '#4f46e5'; autoBtn.style.color = '#fff'; autoBtn.style.border = 'none';
-    runAutoScroll();
-  };
-  document.body.appendChild(btn);
-  document.body.appendChild(autoBtn);
-  const isApiUrl = (u) => u.includes('/graphql/') || u.includes('/i/api/') || u.includes('/2/timeline');
-  const origFetch = window.fetch;
-  window.fetch = async function(...args) {
-    const r = await origFetch.apply(this, args);
-    try {
-      const u = args[0] instanceof Request ? args[0].url : String(args[0]);
-      if (isApiUrl(u)) { const ct = r.headers.get('content-type') ?? ''; if (ct.includes('json')) { const d = await r.clone().json(); processData(d); } }
-    } catch(e) {}
-    return r;
-  };
-  const origOpen = XMLHttpRequest.prototype.open;
-  const origSend = XMLHttpRequest.prototype.send;
-  const xhrUrls = new WeakMap();
-  XMLHttpRequest.prototype.open = function(...args) {
-    xhrUrls.set(this, String(args[1] ?? ''));
-    return origOpen.apply(this, args);
-  };
-  XMLHttpRequest.prototype.send = function(...args) {
-    const xhr = this, u = xhrUrls.get(xhr) ?? '';
-    if (isApiUrl(u)) {
-      xhr.addEventListener('load', function() {
-        try { processData(JSON.parse(xhr.responseText)); } catch(e) {}
-      });
-    }
-    return origSend.apply(this, args);
-  };
-  console.log(\`✅ Script active. Scroll through your \${label}, then click the purple button.\`);
-})();`
-
 // ── Draggable bookmarklet link ────────────────────────────────────────────────
 // React blocks javascript: URLs set via JSX href as a security precaution.
 // We bypass this by setting the href attribute imperatively after mount so the
@@ -360,7 +74,7 @@ function DraggableBookmarklet() {
 
   useEffect(() => {
     // Set href imperatively — bypasses React's javascript: URL XSS guard
-    linkRef.current?.setAttribute('href', BOOKMARKLET_HREF)
+    linkRef.current?.setAttribute('href', X_EXPORT_BOOKMARKLET)
   }, [])
 
   return (
@@ -455,10 +169,7 @@ function UploadZone({ onFile }: { onFile: (file: File) => void }) {
   )
 }
 
-function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like' }) {
-  const targetUrl = importSource === 'like' ? 'https://x.com' : 'https://x.com/i/bookmarks'
-  const targetLabel = importSource === 'like' ? 'x.com/YourUsername/likes' : 'x.com/i/bookmarks'
-  const sourceLabel = importSource === 'like' ? 'likes' : 'bookmarks'
+function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
   const steps = [
     {
       num: 1,
@@ -466,7 +177,8 @@ function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void
       content: (
         <div className="mt-2 space-y-3">
           <p className="text-xs text-zinc-500">
-            Show your bookmark bar first: <strong className="text-zinc-300">View → Show Bookmarks Bar</strong>
+            Show your bookmark bar first: <strong className="text-zinc-300">View → Show Bookmarks Bar</strong>.
+            Added it before? Replace it with this one — the old one missed your newest bookmarks.
           </p>
           {/* Option A: Drag */}
           <div className="flex items-center gap-3 p-3 rounded-xl bg-zinc-800/60 border border-zinc-700/50">
@@ -486,7 +198,7 @@ function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void
                 <li>2. Right-click bookmark bar → <strong className="text-zinc-400">Add bookmark / New bookmark</strong></li>
                 <li>3. Name it <em className="text-zinc-400">Export X Bookmarks</em> and paste the URL</li>
               </ol>
-              <CopyButton text={BOOKMARKLET_HREF} />
+              <CopyButton text={X_EXPORT_BOOKMARKLET} />
             </div>
           </div>
         </div>
@@ -496,46 +208,34 @@ function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void
       num: 2,
       title: (
         <span>
-          Go to{' '}
+          Open{' '}
           <a
-            href={targetUrl}
+            href="https://x.com/i/bookmarks"
             target="_blank"
             rel="noopener noreferrer"
             className="text-indigo-400 hover:underline inline-flex items-center gap-1"
           >
-            {targetLabel} <ExternalLink size={11} />
+            x.com <ExternalLink size={11} />
           </a>{' '}
           while logged in
         </span>
       ),
+      content: <p className="text-xs text-zinc-500 mt-1">Any page on x.com works.</p>,
     },
     {
       num: 3,
-      title: `Click "Export X Bookmarks" in your bookmark bar`,
+      title: 'Click "Export X Bookmarks" in your bookmark bar',
       content: (
         <p className="text-xs text-zinc-500 mt-1">
-          A purple Export button will appear on the page
+          A panel shows the progress. It reads your bookmarks from the newest down, 100 at a time — no scrolling needed — and
+          downloads <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">x-bookmarks-&lt;date&gt;.json</code> when it reaches the oldest. Keep the tab open until then.
         </p>
       ),
     },
     {
       num: 4,
-      title: 'Click "▶ Auto-scroll" to capture all bookmarks automatically',
-      content: (
-        <p className="text-xs text-zinc-500 mt-1">
-          A second button appears below the export button. Click it and it will scroll through all your bookmarks automatically — stopping when done. Or scroll manually if you prefer.
-        </p>
-      ),
-    },
-    {
-      num: 5,
-      title: `Click the purple "Export N ${sourceLabel}" button`,
-      content: (
-        <p className="text-xs text-zinc-500 mt-1">
-          A <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">{sourceLabel}.json</code> file will download automatically.
-          Upload it below.
-        </p>
-      ),
+      title: 'Upload the file below',
+      content: <p className="text-xs text-zinc-500 mt-1">Bookmarks already in Siftly are skipped, so exporting everything each time is fine.</p>,
     },
   ]
 
@@ -563,23 +263,20 @@ function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void
   )
 }
 
-function ConsoleTab({ onFile, importSource }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like' }) {
-  const targetUrl = importSource === 'like' ? 'https://x.com' : 'https://x.com/i/bookmarks'
-  const targetLabel = importSource === 'like' ? 'x.com/YourUsername/likes' : 'x.com/i/bookmarks'
-  const sourceLabel = importSource === 'like' ? 'likes' : 'bookmarks'
+function ConsoleTab({ onFile }: { onFile: (file: File) => void }) {
   const steps = [
     {
       num: 1,
       title: (
         <span>
-          Go to{' '}
+          Open{' '}
           <a
-            href={targetUrl}
+            href="https://x.com/i/bookmarks"
             target="_blank"
             rel="noopener noreferrer"
             className="text-indigo-400 hover:underline inline-flex items-center gap-1"
           >
-            {targetLabel} <ExternalLink size={11} />
+            x.com <ExternalLink size={11} />
           </a>{' '}
           while logged in
         </span>
@@ -600,25 +297,29 @@ function ConsoleTab({ onFile, importSource }: { onFile: (file: File) => void; im
       num: 3,
       title: 'Paste and run the script below',
       content: (
-        <div className="mt-2">
+        <div className="mt-2 space-y-2">
           <div className="relative rounded-xl overflow-hidden border border-zinc-700 bg-zinc-950">
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800">
               <span className="text-xs text-zinc-600 font-mono">console script</span>
-              <CopyButton text={CONSOLE_SCRIPT} />
+              <CopyButton text={X_EXPORT_SCRIPT} />
             </div>
             <pre className="text-xs text-zinc-400 p-3 overflow-auto max-h-40 font-mono leading-relaxed">
-              {CONSOLE_SCRIPT.slice(0, 300)}...
+              {X_EXPORT_SCRIPT.slice(0, 300)}...
             </pre>
           </div>
+          <p className="text-xs text-zinc-500">
+            Chrome may ask you to type <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">allow pasting</code> before it lets you paste.
+          </p>
         </div>
       ),
     },
     {
       num: 4,
-      title: `Press Enter, then scroll through all your ${sourceLabel}`,
+      title: 'Press Enter and wait for the download',
       content: (
         <p className="text-xs text-zinc-500 mt-1">
-          A purple button will appear. Scroll slowly to capture all {sourceLabel}, then click the button to download.
+          A panel shows the progress while it reads your bookmarks from the newest down, then downloads{' '}
+          <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">x-bookmarks-&lt;date&gt;.json</code>. Upload it below.
         </p>
       ),
     },
@@ -644,6 +345,345 @@ function ConsoleTab({ onFile, importSource }: { onFile: (file: File) => void; im
         <p className="text-xs text-zinc-500 mb-3 uppercase tracking-wider font-medium">Upload the downloaded file</p>
         <UploadZone onFile={onFile} />
       </div>
+    </div>
+  )
+}
+
+// ── Sync from X (server-side, with the saved X login) ────────────────────────
+
+function XLogo({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+    </svg>
+  )
+}
+
+interface XSyncStatusResponse {
+  job: { status: 'idle' | 'running' | 'stopping'; startedAt: string | null; progress: XSyncProgress | null; waitingUntil: string | null }
+  last: XSyncResult | null
+  fullCheckAt: string | null
+  nextMode: 'new' | 'all'
+  xLogin: { loggedIn: boolean; screenName: string | null; rejectedAt: string | null }
+  login: { status: 'idle' | 'waiting' | 'saving' | 'success' | 'error' | 'cancelled'; browser: string | null; message: string | null }
+  browserLogin: { available: boolean; browser: string | null; reason: string | null }
+  remoteClient: boolean
+}
+
+function plural(n: number, word: string) {
+  return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`
+}
+
+function syncSummary(result: XSyncResult): string {
+  const parts = [`${plural(result.imported, 'new bookmark')} imported`]
+  if (result.updated > 0) parts.push(`${result.updated.toLocaleString()} completed with X's data`)
+  if (result.outcome === 'caught-up') parts.push('stopped at the bookmarks Siftly already had')
+  else if (result.outcome === 'end') parts.push(`checked all ${plural(result.checked, 'bookmark')} on X`)
+  else if (result.outcome === 'stopped') parts.push(`stopped after checking ${plural(result.checked, 'bookmark')}`)
+  return parts.join(' · ')
+}
+
+function SyncFromXTab({ onSynced }: { onSynced: (result: ImportResult) => void }) {
+  const [status, setStatus] = useState<XSyncStatusResponse | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const [busy, setBusy] = useState<'sync' | 'stop' | 'login' | 'cancel' | null>(null)
+  const [error, setError] = useState('')
+  // A sync this tab started or found running: what it found decides the next step
+  const [watching, setWatching] = useState(false)
+  const [finished, setFinished] = useState<XSyncResult | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/import/x-sync')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load the sync status')
+      setStatus(data)
+      setLoadError('')
+      return data as XSyncStatusResponse
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load the sync status')
+      return null
+    }
+  }, [])
+
+  useEffect(() => {
+    void load().then((data) => {
+      if (data && data.job.status !== 'idle') setWatching(true)
+    })
+  }, [load])
+
+  const running = status?.job.status === 'running' || status?.job.status === 'stopping'
+  const loginWaiting = status?.login.status === 'waiting' || status?.login.status === 'saving'
+
+  // Follow a running sync or the login window
+  useEffect(() => {
+    if (!running && !loginWaiting) return
+    const timer = setInterval(() => void load(), 1000)
+    return () => clearInterval(timer)
+  }, [running, loginWaiting, load])
+
+  // A watched sync finished: new bookmarks go on to categorization
+  useEffect(() => {
+    if (!watching || !status || status.job.status !== 'idle' || !status.last) return
+    setWatching(false)
+    const result = status.last
+    setFinished(result)
+    if (result.imported > 0 && !result.error) {
+      onSynced({ imported: result.imported, skipped: result.alreadyHad, total: result.checked, parsed: result.checked })
+    }
+  }, [watching, status, onSynced])
+
+  async function post(kind: NonNullable<typeof busy>, url: string, init: RequestInit) {
+    setBusy(kind)
+    setError('')
+    try {
+      const res = await fetch(url, init)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Request failed')
+      return data
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Request failed')
+      return null
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function startSync(mode: 'auto' | 'all') {
+    setFinished(null)
+    setBusy('sync')
+    setError('')
+    try {
+      const res = await fetch('/api/import/x-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+      const data = await res.json()
+      // 409: a sync is already running (another tab, the schedule) — follow that one
+      if (!res.ok && res.status !== 409) throw new Error(data.error ?? 'Failed to start the sync')
+      setWatching(true)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start the sync')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function stopSync() {
+    if (await post('stop', '/api/import/x-sync', { method: 'DELETE' })) await load()
+  }
+
+  async function login() {
+    if (await post('login', '/api/x-account/login', { method: 'POST' })) await load()
+  }
+
+  async function cancelLogin() {
+    if (await post('cancel', '/api/x-account/login', { method: 'DELETE' })) await load()
+  }
+
+  if (!status) {
+    return loadError ? (
+      <p className="text-sm text-red-400">{loadError}</p>
+    ) : (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 size={20} className="animate-spin text-zinc-500" />
+      </div>
+    )
+  }
+
+  const progress = status.job.progress
+  const firstSync = status.nextMode === 'all'
+
+  return (
+    <div className="space-y-5">
+      <div className="text-xs text-zinc-500 space-y-1.5 bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4">
+        <p className="text-zinc-300 font-medium text-sm mb-2 flex items-center gap-2">
+          <RefreshCw size={14} className="text-indigo-400" />
+          Siftly reads your bookmarks straight from X
+        </p>
+        <p>
+          It uses your X login and reads your bookmarks the way x.com&apos;s own Bookmarks page does — newest first.
+          The first sync goes through your whole list, so anything earlier imports missed is filled in. After that, each sync
+          stops once it reaches the bookmarks Siftly already has.
+        </p>
+      </div>
+
+      {!status.xLogin.loggedIn ? (
+        loginWaiting ? (
+          <div className="flex items-start gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-3 py-3">
+            <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-indigo-400" />
+            <div className="min-w-0 flex-1 text-sm">
+              <p className="text-zinc-200">
+                {status.login.status === 'saving' ? 'Logged in — saving…' : `Log in to X in the ${status.login.browser ?? 'browser'} window that just opened`}
+              </p>
+              <p className="mt-0.5 text-xs text-zinc-500">It may be behind this window. Siftly notices when you&apos;re logged in and closes it by itself.</p>
+            </div>
+            {status.login.status === 'waiting' && (
+              <button
+                onClick={() => void cancelLogin()}
+                disabled={busy !== null}
+                className="shrink-0 rounded-lg bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => void login()}
+                disabled={busy !== null || !status.browserLogin.available}
+                className="flex items-center gap-2 rounded-xl bg-zinc-100 px-4 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {busy === 'login' ? <Loader2 size={15} className="animate-spin" /> : <XLogo size={14} />}
+                Log in to X
+              </button>
+              <Link href="/settings#x-login" className="text-xs text-zinc-500 hover:text-zinc-300">
+                or paste your X cookies in Settings → X Login
+              </Link>
+            </div>
+            <p className="text-xs text-zinc-500">
+              {status.browserLogin.available
+                ? `Opens ${status.browserLogin.browser} in a separate window on x.com. You log in on X itself, so Siftly never sees your password.${status.remoteClient ? ' The window opens on the computer running Siftly.' : ''}`
+                : `The login window isn't available here: ${status.browserLogin.reason} Paste your X cookies in Settings instead.`}
+            </p>
+            {status.login.status === 'error' && status.login.message && <p className="text-xs text-red-400">{status.login.message}</p>}
+          </div>
+        )
+      ) : (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-zinc-100">
+              <XLogo size={14} />
+            </div>
+            <p className="min-w-0 flex-1 text-sm text-zinc-200">
+              {status.xLogin.screenName ? <>Logged in as <span className="font-semibold">@{status.xLogin.screenName}</span></> : 'Logged in to X'}
+            </p>
+            <Link href="/settings#x-login" className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300">
+              Change
+            </Link>
+          </div>
+
+          {status.xLogin.rejectedAt && !running && (
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-300">
+              <AlertCircle size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1">
+                X stopped accepting this login on {new Date(status.xLogin.rejectedAt).toLocaleDateString()} — log in again to sync.
+              </span>
+              {status.browserLogin.available ? (
+                <button
+                  onClick={() => void login()}
+                  disabled={busy !== null || loginWaiting}
+                  className="shrink-0 rounded-lg bg-amber-500/20 px-2.5 py-1.5 font-medium text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
+                >
+                  Log in again
+                </button>
+              ) : (
+                <Link href="/settings#x-login" className="shrink-0 font-medium text-amber-200 hover:underline">Settings → X Login</Link>
+              )}
+            </div>
+          )}
+
+          {running ? (
+            <div className="space-y-3 rounded-xl border border-indigo-500/25 bg-indigo-500/5 p-4">
+              <div className="flex items-start gap-3">
+                <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-indigo-400" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-zinc-200">
+                    {status.job.status === 'stopping'
+                      ? 'Stopping after this page…'
+                      : progress?.mode === 'all'
+                        ? 'Reading your whole bookmark list from X…'
+                        : 'Reading your newest bookmarks from X…'}
+                  </p>
+                  {progress && progress.pages > 0 && (
+                    <p className="mt-1 text-xs text-zinc-400 tabular-nums">
+                      {plural(progress.checked, 'bookmark')} checked · <span className="text-emerald-400">{progress.imported.toLocaleString()} new</span> ·{' '}
+                      {progress.alreadyHad.toLocaleString()} already in Siftly
+                      {progress.updated > 0 && <> · {progress.updated.toLocaleString()} completed</>}
+                    </p>
+                  )}
+                  {status.job.waitingUntil && (
+                    <p className="mt-1 flex items-center gap-1.5 text-xs text-amber-300">
+                      <Clock size={12} />
+                      X&apos;s limit for reading bookmarks is used up — carrying on at {new Date(status.job.waitingUntil).toLocaleTimeString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => void stopSync()}
+                disabled={busy !== null || status.job.status === 'stopping'}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 py-2 text-xs font-medium text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+              >
+                <StopCircle size={13} />
+                Stop
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button
+                onClick={() => void startSync('auto')}
+                disabled={busy !== null || loginWaiting}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-60"
+              >
+                {busy === 'sync' ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                {firstSync ? 'Sync all my bookmarks' : 'Sync new bookmarks'}
+              </button>
+              <p className="text-xs text-zinc-500">
+                {firstSync
+                  ? 'The first sync checks every bookmark on your X account. With thousands of bookmarks it can take a few minutes.'
+                  : 'Reads your newest bookmarks and stops once it reaches ones Siftly already has.'}
+                {!firstSync && (
+                  <>
+                    {' '}
+                    <button
+                      onClick={() => void startSync('all')}
+                      disabled={busy !== null}
+                      className="text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline disabled:opacity-50"
+                    >
+                      Check all bookmarks instead
+                    </button>
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {!running && (finished ?? status.last) && (() => {
+            const result = (finished ?? status.last)!
+            return (
+              <div
+                className={`rounded-xl border px-3 py-2.5 text-xs ${
+                  result.error ? 'border-red-500/25 bg-red-500/5 text-red-300' : 'border-zinc-700/50 bg-zinc-800/30 text-zinc-400'
+                }`}
+              >
+                <p>
+                  <span className="text-zinc-500">{finished ? 'This sync' : `Last sync, ${new Date(result.finishedAt).toLocaleString()}`}:</span>{' '}
+                  {result.error ? result.error : syncSummary(result)}
+                </p>
+                {result.error && result.imported > 0 && <p className="mt-1 text-zinc-400">{syncSummary(result)} before that.</p>}
+                {finished && result.imported === 0 && !result.error && (
+                  <p className="mt-1 text-emerald-400">You&apos;re up to date — no new bookmarks on X.</p>
+                )}
+                {finished && result.imported > 0 && result.error && (
+                  <button
+                    onClick={() => onSynced({ imported: result.imported, skipped: result.alreadyHad, total: result.checked, parsed: result.checked })}
+                    className="mt-2 rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-500"
+                  >
+                    Categorize the {plural(result.imported, 'new bookmark')}
+                  </button>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
+      {error && <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
     </div>
   )
 }
@@ -757,11 +797,11 @@ function LiveImportTab({ onSynced }: { onSynced: (result: ImportResult) => void 
       <div className="text-xs text-zinc-500 space-y-1.5 bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4">
         <p className="text-zinc-300 font-medium text-sm mb-2 flex items-center gap-2">
           <ExternalLink size={14} className="text-indigo-400" />
-          X OAuth 2.0 (Recommended)
+          X OAuth 2.0 (official API)
         </p>
-        <p>Connect your X account using the official OAuth 2.0 flow. This is the X-approved method — no cookies or session tokens needed.</p>
+        <p>Connect your X account using the official OAuth 2.0 flow — no cookies or session tokens needed.</p>
         <p className="text-zinc-600 mt-1">Requires X OAuth Client ID in Settings. Scopes: bookmark.read, tweet.read, users.read</p>
-        <p className="text-amber-400/80 mt-2 font-medium">Note: The X API requires a paid Basic tier ($200/mo) or higher for bookmark.read scope access. The free tier does not support fetching bookmarks.</p>
+        <p className="text-amber-400/80 mt-2 font-medium">Note: The X API requires a paid Basic tier ($200/mo) or higher for bookmark.read scope access, and it only returns your 800 most recent bookmarks. Sync from X has neither limit.</p>
       </div>
 
       {/* Not configured */}
@@ -861,53 +901,59 @@ function LiveImportTab({ onSynced }: { onSynced: (result: ImportResult) => void 
   )
 }
 
-function InstructionsStep({ onFile, importSource, onLiveSynced }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like'; onLiveSynced: (result: ImportResult) => void }) {
-  const [method, setMethod] = useState<Method>('bookmarklet')
+const noSubscription = () => () => {}
+const isXOAuthReturn = () => /[?&]x_(connected|error)=/.test(window.location.search)
+
+function InstructionsStep({ onFile, onLiveSynced }: { onFile: (file: File) => void; onLiveSynced: (result: ImportResult) => void }) {
+  // Back from X's OAuth page: the X API tab reads the result from the URL (then clears it)
+  const xOAuthReturn = useSyncExternalStore(noSubscription, isXOAuthReturn, () => false)
+  const [method, setMethod] = useState<Method | null>(null)
+  if (method === null && xOAuthReturn) setMethod('api')
+  const shown: Method = method ?? 'sync'
+
+  const tabs: { id: Method; label: React.ReactNode }[] = [
+    {
+      id: 'sync',
+      label: (
+        <span className="flex flex-col items-center leading-tight">
+          <span className="whitespace-nowrap">
+            <RefreshCw size={13} className="inline -mt-0.5 mr-1" />
+            Sync from X
+          </span>
+          <span className="text-[10px] text-indigo-400 font-normal">Recommended</span>
+        </span>
+      ),
+    },
+    { id: 'bookmarklet', label: 'Bookmarklet' },
+    { id: 'console', label: '</> Console' },
+    { id: 'api', label: 'X API' },
+  ]
 
   return (
     <div>
       {/* Method tabs */}
       <div className="flex gap-1 mb-6 p-1 bg-zinc-800 rounded-xl">
-        <button
-          onClick={() => setMethod('live')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-            method === 'live'
-              ? 'bg-zinc-900 text-zinc-100 shadow-sm'
-              : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          <RefreshCw size={13} className="inline -mt-0.5 mr-1" />
-          Live Import
-          <span className="ml-1.5 text-xs text-indigo-400 font-normal">Recommended</span>
-        </button>
-        <button
-          onClick={() => setMethod('bookmarklet')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-            method === 'bookmarklet'
-              ? 'bg-zinc-900 text-zinc-100 shadow-sm'
-              : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          Bookmarklet
-        </button>
-        <button
-          onClick={() => setMethod('console')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-            method === 'console'
-              ? 'bg-zinc-900 text-zinc-100 shadow-sm'
-              : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          {'</>'} Console
-        </button>
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setMethod(tab.id)}
+            className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+              shown === tab.id ? 'bg-zinc-900 text-zinc-100 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {method === 'live' ? (
-        <LiveImportTab onSynced={onLiveSynced} />
-      ) : method === 'bookmarklet' ? (
-        <BookmarkletTab onFile={onFile} importSource={importSource} />
+      {shown === 'sync' ? (
+        <SyncFromXTab onSynced={onLiveSynced} />
+      ) : shown === 'bookmarklet' ? (
+        <BookmarkletTab onFile={onFile} />
+      ) : shown === 'console' ? (
+        <ConsoleTab onFile={onFile} />
       ) : (
-        <ConsoleTab onFile={onFile} importSource={importSource} />
+        <LiveImportTab onSynced={onLiveSynced} />
       )}
     </div>
   )
@@ -935,7 +981,7 @@ function ImportingStep({ result }: {
         <p className="text-xl font-bold text-zinc-100">Import Complete</p>
         <p className="text-zinc-400 mt-1">
           <span className="text-emerald-400 font-semibold">{result.imported}</span> imported,{' '}
-          <span className="text-zinc-500">{result.skipped} skipped</span> as duplicates
+          <span className="text-zinc-500">{result.skipped} already in Siftly</span>
         </p>
       </div>
       <div className="flex items-center gap-2 text-indigo-400 text-sm">
@@ -1339,7 +1385,7 @@ export default function ImportPage() {
     <div className="p-8 max-w-2xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-zinc-100">Import Bookmarks</h1>
-        <p className="text-zinc-400 mt-1">Export your X/Twitter bookmarks as JSON, then upload below.</p>
+        <p className="text-zinc-400 mt-1">Sync your X bookmarks straight from X, or upload an exported JSON file.</p>
       </div>
 
       {step === 1 && <UncategorizedBanner onCategorize={() => setStep(3)} onReprocess={() => { setForceReprocess(true); setStep(3) }} />}
@@ -1353,7 +1399,7 @@ export default function ImportPage() {
       <StepIndicator current={step} />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
-        {step === 1 && <InstructionsStep onFile={handleFile} importSource={importSource} onLiveSynced={handleLiveSynced} />}
+        {step === 1 && <InstructionsStep onFile={handleFile} onLiveSynced={handleLiveSynced} />}
         {step === 2 && (
           <ImportingStep
             result={importing ? null : importResult}
