@@ -1,10 +1,11 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Tag, X, ArrowRight, Folder, Bookmark, Sparkles, Loader2, Check } from 'lucide-react'
+import { Plus, Tag, X, ArrowRight, Folder, Bookmark, Sparkles, Loader2, Check, Trash2 } from 'lucide-react'
 import * as Dialog from '@radix-ui/react-dialog'
 import Link from 'next/link'
 import type { Category } from '@/lib/types'
+import DeleteCategoryDialog from '@/components/delete-category-dialog'
 
 const PRESET_COLORS = [
   '#6366f1', // indigo
@@ -400,9 +401,10 @@ function AIAssistantModal({ open, onClose, onCategoriesCreated }: AIAssistantMod
 
 interface CategoryDisplayCardProps {
   category: Category
+  onDelete: (category: Category) => void
 }
 
-function CategoryDisplayCard({ category }: CategoryDisplayCardProps) {
+function CategoryDisplayCard({ category, onDelete }: CategoryDisplayCardProps) {
   return (
     <div
       className="bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-zinc-700 transition-all duration-200 overflow-hidden group"
@@ -418,6 +420,14 @@ function CategoryDisplayCard({ category }: CategoryDisplayCardProps) {
               </span>
             )}
           </div>
+          <button
+            onClick={() => onDelete(category)}
+            title={`Delete ${category.name}`}
+            aria-label={`Delete ${category.name}`}
+            className="shrink-0 p-1.5 -m-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+          >
+            <Trash2 size={15} />
+          </button>
         </div>
 
         {category.description ? (
@@ -466,6 +476,7 @@ export default function CategoriesPage() {
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [aiModalOpen, setAiModalOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<Category | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -482,6 +493,10 @@ export default function CategoriesPage() {
 
   function handleAdd(category: Category) {
     setCategories((prev) => [...prev, category])
+  }
+
+  function handleDeleted(slug: string) {
+    setCategories((prev) => prev.filter((c) => c.slug !== slug))
   }
 
   function handleCategoriesCreated(newCategories: Category[]) {
@@ -562,7 +577,7 @@ export default function CategoriesPage() {
       {!loading && categories.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {categories.map((cat) => (
-            <CategoryDisplayCard key={cat.id} category={cat} />
+            <CategoryDisplayCard key={cat.id} category={cat} onDelete={setDeleteTarget} />
           ))}
         </div>
       )}
@@ -592,6 +607,15 @@ export default function CategoriesPage() {
         onClose={() => setAiModalOpen(false)}
         onCategoriesCreated={handleCategoriesCreated}
       />
+
+      {deleteTarget && (
+        <DeleteCategoryDialog
+          category={deleteTarget}
+          open
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={handleDeleted}
+        />
+      )}
     </div>
   )
 }

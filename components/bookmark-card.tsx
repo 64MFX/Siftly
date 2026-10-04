@@ -193,6 +193,12 @@ function LinkPreview({ url, tweetUrl, tweetId, prominent = false }: { url: strin
 let cachedCategories: Category[] | null = null
 let cacheFetchPromise: Promise<Category[]> | null = null
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('siftly:category-deleted', () => {
+    cachedCategories = null
+  })
+}
+
 async function fetchAllCategories(): Promise<Category[]> {
   if (cachedCategories !== null) return cachedCategories
   if (cacheFetchPromise !== null) return cacheFetchPromise
