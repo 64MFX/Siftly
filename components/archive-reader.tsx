@@ -2,7 +2,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ExternalLink, FileDown, RefreshCw, AlertTriangle, HardDrive, ImageOff, ChevronDown } from 'lucide-react'
+import Link from 'next/link'
+import { X, ExternalLink, FileDown, RefreshCw, AlertTriangle, HardDrive, ImageOff, ChevronDown, LogIn } from 'lucide-react'
 import {
   tweetArchiveFileUrl,
   type ArchiveDocument,
@@ -23,6 +24,8 @@ interface ArchiveResponse {
   lastError: string | null
   folder: string
   document: ArchiveDocument
+  /** A working X login is saved in Settings → X Login */
+  xLoggedIn?: boolean
 }
 
 function safeHref(url: string | undefined): string | undefined {
@@ -441,6 +444,33 @@ export default function ArchiveReader({ bookmarkId, onClose, onArchived }: Archi
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-300/80">
                       {doc.warnings.map((w, i) => <li key={i}>{w}</li>)}
                     </ul>
+                  )}
+                </div>
+              )}
+              {doc.article && !doc.article.complete && (
+                <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5 text-xs text-zinc-300">
+                  <span className="min-w-0 flex-1">
+                    {data?.xLoggedIn
+                      ? 'Only this article’s preview is saved. You’re logged in to X now, so updating should fetch the full text.'
+                      : 'Only this article’s preview is saved — X shows the full text only to logged-in users.'}
+                  </span>
+                  {data?.xLoggedIn ? (
+                    <button
+                      onClick={handleRefresh}
+                      disabled={refreshing}
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-60"
+                    >
+                      <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                      {refreshing ? 'Fetching…' : 'Fetch full article'}
+                    </button>
+                  ) : (
+                    <Link
+                      href="/settings#x-login"
+                      onClick={onClose}
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 font-medium text-white transition-colors hover:bg-indigo-500"
+                    >
+                      <LogIn size={12} /> Log in to X
+                    </Link>
                   )}
                 </div>
               )}

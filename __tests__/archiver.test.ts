@@ -15,7 +15,7 @@ import {
 
 // buildArchive never touches the database; keep Prisma out of the test
 vi.mock('@/lib/db', () => ({ default: {}, prisma: {} }))
-const { buildArchive } = await import('@/lib/archiver')
+const { buildArchive, waitForRateLimitReset } = await import('@/lib/archiver')
 
 interface FakeNet {
   fetchImpl: FetchLike
@@ -216,7 +216,10 @@ describe('buildArchive', () => {
     )
     expect(result.status).toBe('partial')
     expect(result.doc.article?.previewText).toBe('A short teaser')
-    expect(result.doc.warnings.some((w) => w.includes("Only the article's preview was available"))).toBe(true)
+    // Not logged in: the warning says how to get the full text
+    expect(result.doc.warnings).toContain(
+      "Only the article's preview was saved: X only shows the full text to logged-in users. Log in to X in Settings → X Login, then retry.",
+    )
   })
 
   it('never writes outside the archive root for odd tweet IDs', async () => {
@@ -225,5 +228,119 @@ describe('buildArchive', () => {
     expect(result.folder).not.toContain('..')
     expect((await stat(path.join(root, result.folder, 'archive.json'))).isFile()).toBe(true)
     expect(result.doc.text).toBe('hi')
+  })
+})
+
+describe('X Articles and the X login', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'siftly-archive-')) })
+  afterEach(async () => {
+    vi.useRealTimers()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  /**
+   * GraphQL answers for the article come from `graphql` in order (the last one
+   * repeats); syndication never has the post. `calls` only lists requests for
+   * the article itself, not for the post embedded in it.
+   */
+  function articleNet(graphql: ((loggedIn: boolean) => Response)[]) {
+    const calls: { loggedIn: boolean }[] = []
+    const fetchImpl: FetchLike = async (input, init) => {
+      const url = new URL(input)
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      if (url.pathname.endsWith('/guest/activate.json')) return new Response(JSON.stringify({ guest_token: 'g' }))
+      if (url.pathname.includes('/TweetResultByRestId')) {
+        const { tweetId } = JSON.parse(url.searchParams.get('variables')!) as { tweetId: string }
+        if (tweetId !== ARTICLE_TWEET_ID) return new Response(JSON.stringify({ data: { tweetResult: {} } }))
+        const loggedIn = !!headers.Cookie
+        calls.push({ loggedIn })
+        return graphql[Math.min(calls.length - 1, graphql.length - 1)](loggedIn)
+      }
+      if (url.hostname === 'cdn.syndication.twimg.com') return new Response(null, { status: 404 })
+      if (url.hostname === 'video.twimg.com') return new Response('VIDEO', { headers: { 'content-type': 'video/mp4' } })
+      return new Response('IMAGE', { headers: { 'content-type': 'image/jpeg' } })
+    }
+    return { fetchImpl, calls }
+  }
+  const tweetResponse = (result: unknown) => new Response(JSON.stringify({ data: { tweetResult: { result } } }))
+  const rateLimited = () =>
+    new Response(null, { status: 429, headers: { 'x-rate-limit-reset': String(Math.floor(Date.now() / 1000) + 600) } })
+  const loggedInFetcher = (fetchImpl: FetchLike, onSessionRejected?: () => void) =>
+    new XTweetFetcher({ fetchImpl, queryId: 'Q', credentials: { authToken: 'tok', ct0: 'csrf' }, onSessionRejected })
+
+  it('waits out X\'s rate limit when logged in, then saves the full article', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'))
+    const net = articleNet([rateLimited, () => tweetResponse(articleTweetGraphql)])
+    const waited: number[] = []
+    const result = await buildArchive(bookmarkFrom(ARTICLE_TWEET_ID, articleTweetTimelineOnly), [], {
+      root,
+      fetchImpl: net.fetchImpl,
+      fetcher: loggedInFetcher(net.fetchImpl),
+      waitForRateLimit: async (until) => {
+        waited.push(until)
+        vi.setSystemTime(until + 1000) // as if the job slept until the reset
+        return true
+      },
+    })
+
+    expect(waited).toEqual([Date.parse('2026-01-01T12:10:00Z')])
+    expect(net.calls).toEqual([{ loggedIn: true }, { loggedIn: true }])
+    expect(result.status).toBe('complete')
+    expect(result.doc.article?.complete).toBe(true)
+    expect(result.doc.warnings).toEqual([])
+  })
+
+  it('says when to retry when a one-off archive hits the rate limit', async () => {
+    const net = articleNet([rateLimited])
+    const result = await buildArchive(bookmarkFrom(ARTICLE_TWEET_ID, articleTweetTimelineOnly), [], {
+      root,
+      fetchImpl: net.fetchImpl,
+      fetcher: loggedInFetcher(net.fetchImpl),
+    })
+    expect(result.status).toBe('partial')
+    expect(net.calls).toHaveLength(1)
+    expect(result.doc.warnings.some((w) => /^Only the article's preview was saved: X's rate limit was reached\. Retry after /.test(w))).toBe(true)
+  })
+
+  it('records that X rejected the saved login and says to log in again', async () => {
+    const net = articleNet([(loggedIn) => (loggedIn ? new Response(null, { status: 401 }) : tweetResponse(articleTweetTimelineOnly))])
+    const onSessionRejected = vi.fn()
+    const result = await buildArchive(bookmarkFrom(ARTICLE_TWEET_ID, articleTweetTimelineOnly), [], {
+      root,
+      fetchImpl: net.fetchImpl,
+      fetcher: loggedInFetcher(net.fetchImpl, onSessionRejected),
+    })
+    expect(onSessionRejected).toHaveBeenCalledTimes(1)
+    expect(result.status).toBe('partial')
+    expect(result.doc.warnings).toContain(
+      "Only the article's preview was saved: X rejected your saved login. Log in to X again in Settings → X Login, then retry.",
+    )
+  })
+
+  it('fetches the article body from GraphQL even when the stored copy looked complete', async () => {
+    // Stored as a flat export (no article data) → syndication first; it has nothing, so GraphQL is asked
+    const net = articleNet([() => tweetResponse(articleTweetGraphql)])
+    const result = await buildArchive(bookmarkFrom(ARTICLE_TWEET_ID, flatExportRawJson), [], {
+      root,
+      fetchImpl: net.fetchImpl,
+      fetcher: loggedInFetcher(net.fetchImpl),
+    })
+    expect(result.doc.article?.complete).toBe(true)
+    expect(net.calls).toEqual([{ loggedIn: true }])
+  })
+})
+
+describe('waitForRateLimitReset', () => {
+  it("doesn't wait for a reset that is too far away", async () => {
+    expect(await waitForRateLimitReset(Date.now() + 60 * 60_000, () => false)).toBe(false)
+  })
+
+  it('resumes a second after the reset, or stops early', async () => {
+    const started = Date.now()
+    expect(await waitForRateLimitReset(Date.now() - 900, () => false)).toBe(true)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(90)
+    expect(await waitForRateLimitReset(Date.now() + 5000, () => true)).toBe(false)
   })
 })

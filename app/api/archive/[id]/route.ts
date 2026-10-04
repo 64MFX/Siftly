@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { archiveBookmark, readArchiveDocument } from '@/lib/archiver'
+import { getXSessionStatus } from '@/lib/x-session'
 
 async function findBookmark(idOrTweetId: string) {
   return prisma.bookmark.findFirst({
@@ -20,8 +21,11 @@ export async function GET(
 
   const archive = await readArchiveDocument(bookmark.tweetId)
   if (!archive) return NextResponse.json({ error: 'This bookmark has not been archived yet' }, { status: 404 })
+  const xSession = await getXSessionStatus()
 
   return NextResponse.json({
+    // Lets the reader offer "Log in to X" when an article only has its preview
+    xLoggedIn: xSession.loggedIn && !xSession.rejectedAt,
     bookmarkId: bookmark.id,
     status: bookmark.archiveStatus,
     archivedAt: bookmark.archivedAt?.toISOString() ?? null,

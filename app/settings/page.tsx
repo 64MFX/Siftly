@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Eye,
   EyeOff,
@@ -32,6 +32,8 @@ import {
   Square,
   Cloud,
   CornerLeftUp,
+  LogIn,
+  LogOut,
 } from 'lucide-react'
 
 type AIProvider = 'anthropic' | 'openai' | 'minimax' | 'proxy'
@@ -1253,6 +1255,7 @@ interface ArchiveStatusResponse {
     failed: number
     current: string | null
     error: string | null
+    waitingUntil: string | null
   }
   archiveDir: string
   defaultArchiveDir: string
@@ -1260,6 +1263,7 @@ interface ArchiveStatusResponse {
   inDocker: boolean
   diskUsageBytes: number | null
   xAccess: 'session' | 'guest'
+  xLogin: { loggedIn: boolean; screenName: string | null; rejectedAt: string | null }
 }
 
 interface FolderListing {
@@ -1486,6 +1490,368 @@ function ArchiveFolderEditor({
   )
 }
 
+function XLogo({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+    </svg>
+  )
+}
+
+interface XLoginResponse {
+  loggedIn: boolean
+  account: {
+    userId: string | null
+    screenName: string | null
+    source: 'browser' | 'manual'
+    loggedInAt: string
+    verified: boolean
+  } | null
+  rejectedAt: string | null
+  login: {
+    status: 'idle' | 'waiting' | 'saving' | 'success' | 'error' | 'cancelled'
+    browser: string | null
+    finishedAt: string | null
+    message: string | null
+    screenName: string | null
+  }
+  browserLogin: { available: boolean; browser: string | null; reason: string | null }
+  remoteClient: boolean
+  incompleteArchives: number
+}
+
+/** Tell the Local Archive section to refresh (login changed / a retry started) */
+function notifyArchive() {
+  window.dispatchEvent(new CustomEvent('siftly:archive-changed'))
+}
+
+function XLoginSection({ onToast }: { onToast: (t: Toast) => void }) {
+  const [status, setStatus] = useState<XLoginResponse | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'login' | 'cancel' | 'logout' | 'manual' | 'retry' | null>(null)
+  const [showManual, setShowManual] = useState(false)
+  const [authToken, setAuthToken] = useState('')
+  const [ct0, setCt0] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [retryStarted, setRetryStarted] = useState(false)
+  const [notice, setNotice] = useState<{ type: 'error' | 'info'; text: string } | null>(null)
+  // onToast changes every render of the page; keep the polling below from restarting
+  const toastRef = useRef(onToast)
+  useEffect(() => { toastRef.current = onToast }, [onToast])
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/x-account')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load X login status')
+      setStatus(data)
+      setLoadError(null)
+      return data as XLoginResponse
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load X login status')
+      return null
+    }
+  }, [])
+
+  useEffect(() => {
+    void load().then(() => {
+      // Arriving from "Log in to X" links elsewhere in the app
+      if (window.location.hash === '#x-login') document.getElementById('x-login')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [load])
+
+  const loginStatus = status?.login.status
+  const waiting = loginStatus === 'waiting' || loginStatus === 'saving'
+
+  // Follow the login window; report how it ended
+  useEffect(() => {
+    if (!waiting) return
+    const timer = setInterval(async () => {
+      const data = await load()
+      if (!data || data.login.status === 'waiting' || data.login.status === 'saving') return
+      if (data.login.status === 'success') {
+        toastRef.current({ type: 'success', message: data.login.screenName ? `Logged in to X as @${data.login.screenName}` : 'Logged in to X' })
+        setNotice(null)
+        notifyArchive()
+      } else if (data.login.message) {
+        setNotice({ type: data.login.status === 'error' ? 'error' : 'info', text: data.login.message })
+      }
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [waiting, load])
+
+  async function request(kind: NonNullable<typeof busy>, url: string, init: RequestInit) {
+    setBusy(kind)
+    setNotice(null)
+    try {
+      const res = await fetch(url, init)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Request failed')
+      return data
+    } catch (err) {
+      setNotice({ type: 'error', text: err instanceof Error ? err.message : 'Request failed' })
+      return null
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleLogin() {
+    setRetryStarted(false)
+    if (await request('login', '/api/x-account/login', { method: 'POST' })) await load()
+  }
+
+  async function handleCancel() {
+    if (await request('cancel', '/api/x-account/login', { method: 'DELETE' })) await load()
+  }
+
+  async function handleLogout() {
+    if (await request('logout', '/api/x-account', { method: 'DELETE' })) {
+      await load()
+      notifyArchive()
+      onToast({ type: 'success', message: 'Logged out of X in Siftly' })
+    }
+  }
+
+  async function handleManualSave() {
+    const data = await request('manual', '/api/x-account', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authToken, ct0 }),
+    })
+    if (!data) return
+    setAuthToken('')
+    setCt0('')
+    setShowManual(false)
+    setRetryStarted(false)
+    await load()
+    notifyArchive()
+    if (data.warning) setNotice({ type: 'info', text: data.warning })
+    onToast({ type: 'success', message: data.account?.screenName ? `Logged in to X as @${data.account.screenName}` : 'X login saved' })
+  }
+
+  async function handleRetry() {
+    const data = await request('retry', '/api/archive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'retry' }),
+    })
+    if (data) {
+      setRetryStarted(true)
+      notifyArchive()
+    }
+  }
+
+  const account = status?.account
+  const handle = account?.screenName ?? (status?.login.status === 'success' ? status.login.screenName : null)
+
+  const manualForm = (
+    <div className="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-800/30 p-3">
+      <div className="text-xs text-zinc-400 space-y-1">
+        <p className="text-zinc-300">Copy two cookies from a browser where you&apos;re logged in to x.com:</p>
+        <ol className="list-decimal pl-4 space-y-0.5">
+          <li>Open x.com, then Developer Tools (F12, or ⌥⌘I on a Mac).</li>
+          <li>Chrome / Edge: <span className="text-zinc-300">Application → Cookies → https://x.com</span>. Firefox / Safari: <span className="text-zinc-300">Storage</span>.</li>
+          <li>Copy the values of <code className="font-mono text-zinc-300">auth_token</code> and <code className="font-mono text-zinc-300">ct0</code>.</li>
+        </ol>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="block">
+          <span className="text-xs text-zinc-500">auth_token</span>
+          <div className="relative mt-1">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={authToken}
+              onChange={(e) => setAuthToken(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 pr-8 font-mono text-xs text-zinc-200 focus:border-indigo-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+              aria-label={showToken ? 'Hide auth_token' : 'Show auth_token'}
+            >
+              {showToken ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
+        </label>
+        <label className="block">
+          <span className="text-xs text-zinc-500">ct0</span>
+          <input
+            value={ct0}
+            onChange={(e) => setCt0(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 focus:border-indigo-500 focus:outline-none"
+          />
+        </label>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void handleManualSave()}
+          disabled={busy !== null || !authToken.trim() || !ct0.trim()}
+          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {busy === 'manual' ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+          {busy === 'manual' ? 'Checking with X…' : 'Save login'}
+        </button>
+        <p className="text-[11px] text-zinc-500">These cookies work like a password for your X account. They are stored only in your local Siftly database.</p>
+      </div>
+    </div>
+  )
+
+  return (
+    <div id="x-login" className="scroll-mt-6">
+      <Section
+        icon={XLogo}
+        title="X Login"
+        description="Log in to your X account so the Local Archive can download what X only shows to logged-in users — above all the full text and images of X Articles."
+      >
+        {!status ? (
+          loadError
+            ? <p className="text-sm text-red-400">{loadError}</p>
+            : <div className="h-16 rounded-xl bg-zinc-800/50 animate-pulse" />
+        ) : (
+          <div className="space-y-3">
+            {waiting ? (
+              <div className="flex items-start gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-3 py-3">
+                <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-indigo-400" />
+                <div className="min-w-0 flex-1 text-sm">
+                  <p className="text-zinc-200">
+                    {loginStatus === 'saving'
+                      ? 'Logged in — saving…'
+                      : `Log in to X in the ${status.login.browser ?? 'browser'} window that just opened`}
+                  </p>
+                  {loginStatus === 'waiting' && (
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      It may be behind this window — check your taskbar or Dock. Siftly notices when you&apos;re logged in and closes the window by itself.
+                    </p>
+                  )}
+                </div>
+                {loginStatus === 'waiting' && (
+                  <button
+                    onClick={() => void handleCancel()}
+                    disabled={busy !== null}
+                    className="shrink-0 rounded-lg bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            ) : status.loggedIn ? (
+              <>
+                <div className="flex items-center gap-3 rounded-xl border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-zinc-100">
+                    <XLogo size={15} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-100">
+                      {handle ? <>Logged in as <span className="font-semibold">@{handle}</span></> : 'Logged in to X'}
+                    </p>
+                    <p className="text-xs text-zinc-500">
+                      {account?.source === 'browser' ? 'Logged in through the login window' : 'Cookies entered by hand'}
+                      {account?.loggedInAt && <> · {new Date(account.loggedInAt).toLocaleDateString()}</>}
+                      {account && !account.verified && ' · X couldn’t confirm the account when it was saved'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void handleLogout()}
+                    disabled={busy !== null}
+                    title="Forget this X login"
+                    className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-400 disabled:opacity-50 transition-colors"
+                  >
+                    {busy === 'logout' ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />} Log out
+                  </button>
+                </div>
+
+                {status.rejectedAt && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-300">
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span className="min-w-0 flex-1">
+                      X stopped accepting this login on {new Date(status.rejectedAt).toLocaleDateString()} — it may have expired or been logged out on X.
+                      {status.browserLogin.available
+                        ? ' Log in again to keep downloading full articles.'
+                        : ' Log out, then paste fresh cookies to keep downloading full articles.'}
+                    </span>
+                    {status.browserLogin.available && (
+                      <button
+                        onClick={() => void handleLogin()}
+                        disabled={busy !== null}
+                        className="flex shrink-0 items-center gap-1.5 rounded-lg bg-amber-500/20 px-2.5 py-1.5 font-medium text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
+                      >
+                        <LogIn size={12} /> Log in again
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {status.incompleteArchives > 0 && !status.rejectedAt && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5 text-xs text-zinc-300">
+                    <Info size={14} className="shrink-0 text-indigo-400" />
+                    <span className="min-w-0 flex-1">
+                      {retryStarted
+                        ? 'Retrying — follow the progress in Local Archive below.'
+                        : `${status.incompleteArchives.toLocaleString()} downloaded bookmark${status.incompleteArchives === 1 ? ' is' : 's are'} incomplete, such as X Articles that only saved their preview. Retry ${status.incompleteArchives === 1 ? 'it' : 'them'} with your login.`}
+                    </span>
+                    {!retryStarted && (
+                      <button
+                        onClick={() => void handleRetry()}
+                        disabled={busy !== null}
+                        className="flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                      >
+                        {busy === 'retry' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Retry now
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => void handleLogin()}
+                    disabled={busy !== null || !status.browserLogin.available}
+                    className="flex items-center gap-2 rounded-xl bg-zinc-100 px-4 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {busy === 'login' ? <Loader2 size={15} className="animate-spin" /> : <XLogo size={14} />}
+                    Log in to X
+                  </button>
+                  <button
+                    onClick={() => setShowManual((v) => !v)}
+                    className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300"
+                  >
+                    {showManual || !status.browserLogin.available ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    Paste cookies instead
+                  </button>
+                </div>
+                {status.browserLogin.available ? (
+                  <p className="text-xs text-zinc-500">
+                    Opens {status.browserLogin.browser} in a separate window on x.com. You log in on X itself, so Siftly never sees your
+                    password, and the window closes by itself once you&apos;re in.
+                    {status.remoteClient && ' The window opens on the computer running Siftly, not on this device.'}
+                  </p>
+                ) : (
+                  <p className="flex items-start gap-2 text-xs text-zinc-400">
+                    <Info size={13} className="mt-0.5 shrink-0" />
+                    <span>The login window isn&apos;t available here: {status.browserLogin.reason} Paste your X cookies instead.</span>
+                  </p>
+                )}
+                {(showManual || !status.browserLogin.available) && manualForm}
+              </>
+            )}
+
+            {notice && (
+              <p className={`text-xs ${notice.type === 'error' ? 'text-red-400' : 'text-zinc-400'}`}>{notice.text}</p>
+            )}
+          </div>
+        )}
+      </Section>
+    </div>
+  )
+}
+
 function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
   const [status, setStatus] = useState<ArchiveStatusResponse | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1505,6 +1871,13 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
   }, [])
 
   useEffect(() => { void load(true) }, [load])
+
+  // The X Login section changed the login or started a retry
+  useEffect(() => {
+    const onChange = () => { void load() }
+    window.addEventListener('siftly:archive-changed', onChange)
+    return () => window.removeEventListener('siftly:archive-changed', onChange)
+  }, [load])
 
   const running = status?.job.status === 'running' || status?.job.status === 'stopping'
 
@@ -1608,14 +1981,29 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
             </div>
           )}
 
-          <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs ${
-            status.xAccess === 'session' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400' : 'border-zinc-700/50 bg-zinc-800/40 text-zinc-400'
-          }`}>
-            <Info size={13} className="shrink-0 mt-0.5" />
-            {status.xAccess === 'session'
-              ? 'Using your saved X session to fetch full posts and X Articles.'
-              : 'Using guest access to X. Long-form X Articles may only save their preview — save your X session (auth_token + ct0) in Import → Live sync to archive them in full.'}
-          </div>
+          {(() => {
+            const { loggedIn, screenName, rejectedAt } = status.xLogin
+            const tone = !loggedIn
+              ? 'border-zinc-700/50 bg-zinc-800/40 text-zinc-400'
+              : rejectedAt ? 'border-amber-500/30 bg-amber-500/5 text-amber-300' : 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400'
+            return (
+              <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs ${tone}`}>
+                <Info size={13} className="shrink-0 mt-0.5" />
+                <span className="min-w-0 flex-1">
+                  {!loggedIn
+                    ? 'Not logged in to X, so X Articles only save their preview.'
+                    : rejectedAt
+                      ? 'X stopped accepting your saved login, so X Articles only save their preview until you log in again.'
+                      : `Logged in to X${screenName ? ` as @${screenName}` : ''}: full X Articles and posts are downloaded with your login.`}
+                </span>
+                {(!loggedIn || rejectedAt) && (
+                  <a href="#x-login" className="shrink-0 font-medium text-indigo-400 hover:text-indigo-300">
+                    {loggedIn ? 'Log in again' : 'Log in to X'}
+                  </a>
+                )}
+              </div>
+            )
+          })()}
 
           {running && job ? (
             <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-2">
@@ -1623,7 +2011,7 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
                 <span className="flex items-center gap-2 text-zinc-200">
                   <Loader2 size={14} className="animate-spin text-indigo-400" />
                   {job.status === 'stopping' ? 'Stopping…' : `Downloading ${job.done.toLocaleString()} of ${job.total.toLocaleString()}`}
-                  {job.current && job.status === 'running' && <span className="text-xs text-zinc-500 truncate">{job.current}</span>}
+                  {job.current && job.status === 'running' && !job.waitingUntil && <span className="text-xs text-zinc-500 truncate">{job.current}</span>}
                 </span>
                 <button
                   onClick={() => void handleStop()}
@@ -1636,6 +2024,11 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
               <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
                 <div className="h-full bg-indigo-500 transition-all" style={{ width: `${pct}%` }} />
               </div>
+              {job.waitingUntil && job.status === 'running' && (
+                <p className="text-xs text-zinc-400">
+                  X&apos;s rate limit was reached — paused until {new Date(job.waitingUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} so X Articles get their full text instead of a preview.
+                </p>
+              )}
               {(job.partial > 0 || job.failed > 0) && (
                 <p className="text-xs text-amber-400">{job.partial} incomplete · {job.failed} failed so far</p>
               )}
@@ -1650,14 +2043,18 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
                 <HardDriveDownload size={14} />
                 {stats!.pending > 0 ? `Download ${stats!.pending.toLocaleString()} bookmark${stats!.pending === 1 ? '' : 's'}` : 'Everything is downloaded'}
               </button>
-              {stats!.partial > 0 && (
+              {stats!.partial + stats!.failed > 0 && (
                 <button
                   onClick={() => void handleStart('retry')}
                   disabled={starting || editingFolder}
+                  title="Download the incomplete and failed bookmarks again — with your X login, X Articles get their full text"
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-medium text-zinc-200 disabled:opacity-50 transition-colors"
                 >
                   <RefreshCw size={14} />
-                  Retry {stats!.partial.toLocaleString()} incomplete
+                  Retry {[
+                    stats!.partial > 0 && `${stats!.partial.toLocaleString()} incomplete`,
+                    stats!.failed > 0 && `${stats!.failed.toLocaleString()} failed`,
+                  ].filter(Boolean).join(' + ')}
                 </button>
               )}
               {stats!.archived > 0 && (
@@ -2008,6 +2405,7 @@ export default function SettingsPage() {
         <ApiKeySection onToast={showToast} />
         <XOAuthSection onToast={showToast} />
         <DataSection />
+        <XLoginSection onToast={showToast} />
         <LocalArchiveSection onToast={showToast} />
         <ObsidianExportBlock onToast={showToast} />
         <DangerZoneSection onToast={showToast} />

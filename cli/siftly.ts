@@ -2,9 +2,17 @@
 import prisma from '@/lib/db'
 import { ftsSearch } from '@/lib/fts'
 import { extractKeywords } from '@/lib/search-utils'
-import { archiveBookmark, createXFetcher, getArchiveStats, type ArchiveMode } from '@/lib/archiver'
+import {
+  archiveBookmark,
+  archiveWhereForMode,
+  createXFetcher,
+  getArchiveStats,
+  waitForRateLimitReset,
+  type ArchiveMode,
+} from '@/lib/archiver'
 import { archiveFolderName } from '@/lib/archive-storage'
 import { getArchiveLocation, getArchiveRoot, setArchiveDir } from '@/lib/archive-location'
+import { getXSessionStatus } from '@/lib/x-session'
 import path from 'path'
 
 // ─── Output ──────────────────────────────────────────────────────────────────
@@ -239,8 +247,14 @@ async function cmdStats() {
 }
 
 async function cmdArchiveStatus() {
-  const location = await getArchiveLocation()
-  output({ archiveDir: location.dir, customArchiveDir: location.custom, ...(await getArchiveStats()) })
+  const [location, stats, xSession] = await Promise.all([getArchiveLocation(), getArchiveStats(), getXSessionStatus()])
+  output({
+    archiveDir: location.dir,
+    customArchiveDir: location.custom,
+    ...stats,
+    // Settings → X Login: needed for the full text of X Articles
+    xLogin: { loggedIn: xSession.loggedIn, screenName: xSession.account?.screenName ?? null, rejectedAt: xSession.rejectedAt },
+  })
 }
 
 async function cmdArchiveDir(args: string[]) {
@@ -260,11 +274,7 @@ async function cmdArchive(args: string[]) {
   const mode: ArchiveMode = flags.mode === 'retry' || flags.mode === 'all' ? flags.mode : 'pending'
   const limit = flags.limit ? Math.max(parseInt(flags.limit, 10) || 0, 0) : undefined
 
-  let where: object
-  if (flags.id) where = { OR: [{ id: flags.id }, { tweetId: flags.id }] }
-  else if (mode === 'all') where = {}
-  else if (mode === 'retry') where = { OR: [{ archivedAt: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
-  else where = { archivedAt: null }
+  const where = flags.id ? { OR: [{ id: flags.id }, { tweetId: flags.id }] } : archiveWhereForMode(mode)
 
   const bookmarks = await prisma.bookmark.findMany({
     where,
@@ -276,9 +286,13 @@ async function cmdArchive(args: string[]) {
 
   // --offline: build archives from stored data only, without contacting X
   const fetcher = flags.offline === 'true' ? null : await createXFetcher()
+  const waitForRateLimit = (until: number) => {
+    process.stderr.write(`X rate limit reached — waiting until ${new Date(until).toLocaleTimeString()} to fetch the full article…\n`)
+    return waitForRateLimitReset(until, () => false)
+  }
   const results = []
   for (const b of bookmarks) {
-    const r = await archiveBookmark(b.id, { fetcher })
+    const r = await archiveBookmark(b.id, { fetcher, waitForRateLimit })
     results.push({ tweetId: r.tweetId, status: r.status, warnings: r.warnings })
     if (isTTY) process.stderr.write(`[${results.length}/${bookmarks.length}] ${r.tweetId} ${r.status}\n`)
   }

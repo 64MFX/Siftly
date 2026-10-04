@@ -116,6 +116,8 @@ The volume persists across `docker compose down` and restarts. Your bookmarks ar
 
 Locally archived tweets, articles and media (Settings → Local Archive) are saved to `/data/archive/` on the same volume. To keep them in a cloud-drive folder instead, mount it into the container (e.g. `- "$HOME/Google Drive/My Drive/Siftly Archive:/archive"` under `volumes:`) and choose `/archive` in Settings → Local Archive → Change, or set `SIFTLY_ARCHIVE_DIR=/archive`.
 
+To download X Articles in full, Siftly needs your X login (Settings → X Login). The **Log in to X** window can't open from inside a container, so use **Paste cookies instead** there: copy the `auth_token` and `ct0` cookies from a browser where you're logged in to x.com.
+
 **To back up the database:**
 
 ```bash

@@ -12,6 +12,7 @@ interface JobState {
   complete: number
   partial: number
   failed: number
+  waitingUntil?: string | null
 }
 
 interface ArchiveStatus {
@@ -100,7 +101,11 @@ export default function ArchiveDownloadButton({ initialPending }: { initialPendi
         <Loader2 size={15} className="shrink-0 animate-spin text-indigo-400" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-zinc-200 tabular-nums">
-            {job.status === 'stopping' ? 'Stopping…' : `Downloading ${job.done.toLocaleString()} / ${job.total.toLocaleString()}`}
+            {job.status === 'stopping'
+              ? 'Stopping…'
+              : job.waitingUntil
+                ? `Paused for X until ${new Date(job.waitingUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                : `Downloading ${job.done.toLocaleString()} / ${job.total.toLocaleString()}`}
           </p>
           <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
             <div className="h-full bg-indigo-500 transition-all" style={{ width: `${pct}%` }} />
