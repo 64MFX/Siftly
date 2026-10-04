@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
-import { invalidateSettingsCache } from '@/lib/settings'
+import { invalidateSettingsCache, AI_PROVIDERS } from '@/lib/settings'
+import { normalizeProxyBaseUrl, DEFAULT_PROXY_BASE_URL } from '@/lib/proxy-auth'
 import { validateVaultPath } from '@/lib/obsidian-exporter'
 
 function maskKey(raw: string | null): string | null {
@@ -31,7 +32,7 @@ const ALLOWED_MINIMAX_MODELS = [
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const [anthropic, anthropicModel, provider, openai, openaiModel, minimax, minimaxModel, xClientId, xClientSecret, obsidianVault] = await Promise.all([
+    const [anthropic, anthropicModel, provider, openai, openaiModel, minimax, minimaxModel, proxyKey, proxyModel, proxyBaseUrl, xClientId, xClientSecret, obsidianVault] = await Promise.all([
       prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'anthropicModel' } }),
       prisma.setting.findUnique({ where: { key: 'aiProvider' } }),
@@ -39,6 +40,9 @@ export async function GET(): Promise<NextResponse> {
       prisma.setting.findUnique({ where: { key: 'openaiModel' } }),
       prisma.setting.findUnique({ where: { key: 'minimaxApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'minimaxModel' } }),
+      prisma.setting.findUnique({ where: { key: 'proxyApiKey' } }),
+      prisma.setting.findUnique({ where: { key: 'proxyModel' } }),
+      prisma.setting.findUnique({ where: { key: 'proxyBaseUrl' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_id' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_secret' } }),
       prisma.setting.findUnique({ where: { key: 'obsidianVaultPath' } }),
@@ -55,6 +59,10 @@ export async function GET(): Promise<NextResponse> {
       minimaxApiKey: maskKey(minimax?.value ?? null),
       hasMinimaxKey: minimax !== null,
       minimaxModel: minimaxModel?.value ?? 'MiniMax-M2.7',
+      proxyApiKey: maskKey(proxyKey?.value ?? null),
+      hasProxyKey: proxyKey !== null,
+      proxyModel: proxyModel?.value ?? '',
+      proxyBaseUrl: proxyBaseUrl?.value ?? process.env.AI_PROXY_BASE_URL ?? DEFAULT_PROXY_BASE_URL,
       xOAuthClientId: maskKey(xClientId?.value ?? null),
       xOAuthClientSecret: maskKey(xClientSecret?.value ?? null),
       hasXOAuth: !!xClientId?.value,
@@ -78,6 +86,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     openaiModel?: string
     minimaxApiKey?: string
     minimaxModel?: string
+    proxyApiKey?: string
+    proxyModel?: string
+    proxyBaseUrl?: string
     xOAuthClientId?: string
     xOAuthClientSecret?: string
     obsidianVaultPath?: string
@@ -92,7 +103,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // Save provider if provided
   if (provider !== undefined) {
-    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'minimax') {
+    if (!(AI_PROVIDERS as readonly string[]).includes(provider)) {
       return NextResponse.json({ error: 'Invalid provider' }, { status: 400 })
     }
     await prisma.setting.upsert({
@@ -144,6 +155,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     })
     invalidateSettingsCache()
     return NextResponse.json({ saved: true })
+  }
+
+  // Save local proxy model if provided — models are discovered from the proxy,
+  // so any reasonable model ID is accepted
+  if (body.proxyModel !== undefined) {
+    const model = typeof body.proxyModel === 'string' ? body.proxyModel.trim() : ''
+    if (!model || model.length > 200) {
+      return NextResponse.json({ error: 'Invalid proxy model' }, { status: 400 })
+    }
+    await prisma.setting.upsert({
+      where: { key: 'proxyModel' },
+      update: { value: model },
+      create: { key: 'proxyModel', value: model },
+    })
+    invalidateSettingsCache()
+    return NextResponse.json({ saved: true })
+  }
+
+  // Save local proxy base URL if provided
+  if (body.proxyBaseUrl !== undefined) {
+    let normalized: string
+    try {
+      normalized = normalizeProxyBaseUrl(String(body.proxyBaseUrl))
+    } catch (err) {
+      return NextResponse.json({ error: `Invalid proxy URL: ${err instanceof Error ? err.message : String(err)}` }, { status: 400 })
+    }
+    await prisma.setting.upsert({
+      where: { key: 'proxyBaseUrl' },
+      update: { value: normalized },
+      create: { key: 'proxyBaseUrl', value: normalized },
+    })
+    invalidateSettingsCache()
+    return NextResponse.json({ saved: true, proxyBaseUrl: normalized })
   }
 
   // Save Anthropic key if provided
@@ -215,6 +259,29 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // Save local proxy key if provided
+  if (body.proxyApiKey !== undefined) {
+    if (typeof body.proxyApiKey !== 'string' || body.proxyApiKey.trim() === '') {
+      return NextResponse.json({ error: 'Invalid proxyApiKey value' }, { status: 400 })
+    }
+    const trimmed = body.proxyApiKey.trim()
+    try {
+      await prisma.setting.upsert({
+        where: { key: 'proxyApiKey' },
+        update: { value: trimmed },
+        create: { key: 'proxyApiKey', value: trimmed },
+      })
+      invalidateSettingsCache()
+      return NextResponse.json({ saved: true })
+    } catch (err) {
+      console.error('Settings POST (proxy) error:', err)
+      return NextResponse.json(
+        { error: `Failed to save: ${err instanceof Error ? err.message : String(err)}` },
+        { status: 500 }
+      )
+    }
+  }
+
   // Save Obsidian vault path if provided
   if (body.obsidianVaultPath !== undefined) {
     const trimmed = body.obsidianVaultPath.trim()
@@ -272,7 +339,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const allowed = ['anthropicApiKey', 'openaiApiKey', 'minimaxApiKey', 'x_oauth_client_id', 'x_oauth_client_secret']
+  const allowed = ['anthropicApiKey', 'openaiApiKey', 'minimaxApiKey', 'proxyApiKey', 'x_oauth_client_id', 'x_oauth_client_secret']
   if (!body.key || !allowed.includes(body.key)) {
     return NextResponse.json({ error: 'Invalid key' }, { status: 400 })
   }

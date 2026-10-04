@@ -243,6 +243,8 @@ All settings are manageable in the **Settings** page at `/settings` or via envir
 | OpenAI Key | `OPENAI_API_KEY` | Alternative provider — GPT-4.1 Mini/Nano/Full, o4-mini, o3 |
 | MiniMax Key | `MINIMAX_API_KEY` | Alternative provider — M2.7 (1M context), M2.5, M2.5-highspeed |
 | MiniMax Base URL | `MINIMAX_BASE_URL` | Custom MiniMax API endpoint (default: `https://api.minimax.io/v1`) |
+| Local Proxy URL | `AI_PROXY_BASE_URL` | OpenAI-compatible proxy such as [CLIProxyAPI / EasyCLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (default: `http://127.0.0.1:8317/v1`). Models are fetched from the proxy in Settings |
+| Local Proxy Key | `AI_PROXY_API_KEY` | One of the `api-keys` configured in the proxy |
 | Database | `DATABASE_URL` | SQLite file path (default: `file:./prisma/dev.db`) |
 
 ### Custom API Endpoint

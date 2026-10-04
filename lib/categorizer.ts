@@ -2,7 +2,7 @@ import prisma from '@/lib/db'
 import { buildImageContext } from '@/lib/image-context'
 import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/claude-cli-auth'
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
-import { getActiveModel, getProvider } from '@/lib/settings'
+import { getActiveModel, getProvider, apiKeySettingFor } from '@/lib/settings'
 import { AIClient, resolveAIClient } from '@/lib/ai-client'
 
 const BATCH_SIZE = 20
@@ -255,7 +255,7 @@ export async function categorizeBatch(
         console.warn('[categorize] Codex CLI failed, falling back to SDK:', result.error)
       }
     }
-  } else {
+  } else if (provider === 'anthropic') {
     if (await getCliAvailability()) {
       const model = await getActiveModel()
       const cliModel = modelNameToCliAlias(model)
@@ -399,7 +399,7 @@ export async function categorizeAll(
 
   // Resolve auth once — avoids re-resolving inside every batch call
   const provider = await getProvider()
-  const keyName = provider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey'
+  const keyName = apiKeySettingFor(provider)
   const apiKeySetting = await prisma.setting.findUnique({ where: { key: keyName } })
   let client: AIClient | null = null
   try {
