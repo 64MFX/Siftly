@@ -21,7 +21,7 @@ import {
   type ArchiveStatus,
   type ArticleBlock,
 } from '@/lib/archive-types'
-import { decodeHtmlEntities, mergeSnapshots, parseStoredRaw, type TweetSnapshot } from '@/lib/tweet-snapshot'
+import { decodeHtmlEntities, mergeSnapshots, parseStoredRaw, snapshotFromArchiveDoc } from '@/lib/tweet-snapshot'
 import { XTweetFetcher, type FetchLike, type RemoteTweet } from '@/lib/x-tweet-fetcher'
 import { getArchiveRoot, isArchiveRelocating } from '@/lib/archive-location'
 import { getXCredentials, markXSessionRejected } from '@/lib/x-session'
@@ -38,6 +38,7 @@ import {
   writeFileAtomic,
 } from '@/lib/archive-storage'
 import { renderArchiveHtml, renderArchiveMarkdown } from '@/lib/archive-render'
+import { reindexBookmarks } from '@/lib/search-index'
 
 // ── Building one archive (no database access — unit-testable) ───────────────
 
@@ -116,36 +117,6 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: nu
   })
   await Promise.all(workers)
   return results
-}
-
-function snapshotFromArchiveDoc(doc: ArchiveDocument | null): TweetSnapshot | null {
-  if (!doc || doc.version !== ARCHIVE_VERSION) return null
-  return {
-    tweetId: doc.tweetId,
-    authorName: doc.author.name,
-    authorHandle: doc.author.handle,
-    avatarUrl: doc.author.avatarUrl,
-    createdAt: doc.createdAt,
-    text: doc.text,
-    media: doc.media,
-    ...(doc.quote
-      ? {
-          quote: {
-            tweetId: doc.quote.tweetId,
-            authorName: doc.quote.author.name,
-            authorHandle: doc.quote.author.handle,
-            avatarUrl: doc.quote.author.avatarUrl,
-            createdAt: doc.quote.createdAt,
-            text: doc.quote.text,
-            media: doc.quote.media,
-            unavailable: doc.quote.unavailable,
-          },
-        }
-      : {}),
-    ...(doc.card ? { card: doc.card } : {}),
-    ...(doc.poll ? { poll: doc.poll } : {}),
-    ...(doc.article ? { article: doc.article } : {}),
-  }
 }
 
 function dbMediaToArchived(item: ArchiveSourceMediaItem): ArchivedMedia {
@@ -593,6 +564,8 @@ async function runArchiveBookmark(bookmarkId: string, options: ArchiveBookmarkOp
         ? [prisma.mediaItem.createMany({ data: result.newMedia.map((m) => ({ ...m, bookmarkId: bookmark.id })) })]
         : []),
     ])
+    // AI search reads the archived copy — e.g. an X Article's full text
+    await reindexBookmarks([bookmark.id]).catch((err) => console.error(`[archive] Search index update failed for ${bookmark.tweetId}:`, err))
 
     return {
       bookmarkId: bookmark.id,

@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
-import { Sparkles, Search, Loader2, BookMarked, AlertCircle, ImageIcon } from 'lucide-react'
+import { Fragment, useState, useRef, useEffect } from 'react'
+import Link from 'next/link'
+import { Sparkles, Loader2, BookMarked, AlertCircle, ImageIcon, FileText, MessageSquareText } from 'lucide-react'
 import BookmarkCard from '@/components/bookmark-card'
 import type { BookmarkWithMedia } from '@/lib/types'
 
@@ -11,12 +12,32 @@ interface AIBookmark extends BookmarkWithMedia {
   aiReason: string
 }
 
+/** A result with the number the answer cites it by — kept when others are deleted */
+type NumberedResult = AIBookmark & { num: number }
+
+interface SearchResponse {
+  bookmarks?: AIBookmark[]
+  explanation?: string
+  answer?: string | null
+  notice?: string
+  considered?: number
+  error?: string
+}
+
+interface IndexStats {
+  bookmarks: number
+  indexed: number
+  articles: number
+  fullArticles: number
+}
+
 const EXAMPLES = [
+  'What have people said about fine-tuning small models?',
+  'articles about building a startup',
   'funny meme about AI replacing developers',
   'Solana DeFi tools I should try',
+  'that video explaining how transformers work',
   'something about productivity and focus',
-  'crypto market crash meme',
-  'cool developer tools for building faster',
 ]
 
 interface ImageStats {
@@ -25,13 +46,43 @@ interface ImageStats {
   remaining: number
 }
 
+/** Answer text with [1] / [2, 3] citations as links to the numbered results */
+function AnswerText({ text }: { text: string }) {
+  const parts = text.split(/(\[\d+(?:,\s*\d+)*\])/g)
+  return (
+    <>
+      {parts.map((part, i) => {
+        const cite = part.match(/^\[(\d+(?:,\s*\d+)*)\]$/)
+        if (!cite) return <Fragment key={i}>{part}</Fragment>
+        return (
+          <span key={i} className="whitespace-nowrap">
+            {cite[1].split(',').map((n) => n.trim()).map((n, j) => (
+              <a
+                key={j}
+                href={`#result-${n}`}
+                className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mx-0.5 rounded-md bg-indigo-500/15 text-indigo-400 text-[11px] font-medium align-text-top hover:bg-indigo-500/25 transition-colors"
+              >
+                {n}
+              </a>
+            ))}
+          </span>
+        )
+      })}
+    </>
+  )
+}
+
 export default function AISearchPage() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<AIBookmark[]>([])
+  const [results, setResults] = useState<NumberedResult[]>([])
   const [explanation, setExplanation] = useState('')
+  const [answer, setAnswer] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [considered, setConsidered] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
+  const [indexStats, setIndexStats] = useState<IndexStats | null>(null)
   const [imageStats, setImageStats] = useState<ImageStats | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [pipelineRunning, setPipelineRunning] = useState(false)
@@ -39,6 +90,11 @@ export default function AISearchPage() {
 
   useEffect(() => {
     inputRef.current?.focus()
+    // Also indexes new bookmarks, so the first search doesn't wait for it
+    fetch('/api/search/ai')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: IndexStats | null) => setIndexStats(data))
+      .catch(() => {})
     // Load image analysis progress
     fetch('/api/analyze/images')
       .then((r) => r.json())
@@ -80,27 +136,29 @@ export default function AISearchPage() {
     }
   }
 
-  async function handleSearch() {
-    if (!query.trim() || loading) return
+  async function handleSearch(text = query) {
+    const q = text.trim()
+    if (!q || loading) return
     setLoading(true)
     setError('')
     setResults([])
     setExplanation('')
+    setAnswer(null)
+    setNotice('')
     setSearched(true)
     try {
       const res = await fetch('/api/search/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({ query: q }),
       })
-      const data = (await res.json()) as {
-        bookmarks?: AIBookmark[]
-        explanation?: string
-        error?: string
-      }
+      const data = (await res.json()) as SearchResponse
       if (!res.ok) throw new Error(data.error ?? 'Search failed')
-      setResults(data.bookmarks ?? [])
+      setResults((data.bookmarks ?? []).map((b, i) => ({ ...b, num: i + 1 })))
       setExplanation(data.explanation ?? '')
+      setAnswer(data.answer ?? null)
+      setNotice(data.notice ?? '')
+      setConsidered(data.considered ?? 0)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Search failed')
     } finally {
@@ -116,11 +174,10 @@ export default function AISearchPage() {
 
   function handleExampleClick(example: string) {
     setQuery(example)
-    // Use a short timeout so the state update propagates before the search fires
-    setTimeout(() => {
-      void handleSearch()
-    }, 100)
+    void handleSearch(example)
   }
+
+  const previewArticles = indexStats ? indexStats.articles - indexStats.fullArticles : 0
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -133,7 +190,7 @@ export default function AISearchPage() {
           Find anything in your bookmarks
         </h1>
         <p className="text-zinc-500 text-sm">
-          Describe what you&apos;re looking for below.
+          Describe what you&apos;re looking for, or ask a question — the AI reads your posts, quoted posts, links and full X Articles.
         </p>
       </div>
 
@@ -144,7 +201,7 @@ export default function AISearchPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={`e.g. "that funny meme about devs crying over AI" or "Solana tools for tracking wallets"`}
+          placeholder={`e.g. "that funny meme about devs crying over AI" or "what did people say about Rust vs Go?"`}
           rows={3}
           className="w-full px-4 py-4 pr-36 rounded-2xl bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder:text-zinc-600 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all resize-none"
         />
@@ -158,10 +215,34 @@ export default function AISearchPage() {
           ) : (
             <Sparkles size={14} />
           )}
-          {loading ? 'Searching\u2026' : 'Search'}
+          {loading ? 'Searching…' : 'Search'}
         </button>
       </div>
       <p className="text-xs text-zinc-600 mb-8 text-right">⌘+Enter to search</p>
+
+      {/* What search can read */}
+      {indexStats !== null && indexStats.bookmarks > 0 && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 mb-3 text-xs">
+          <FileText size={13} className="text-zinc-500 shrink-0 mt-px" />
+          <div className="flex-1 min-w-0 text-zinc-400 leading-relaxed">
+            Searching <span className="text-zinc-200 font-medium">{indexStats.bookmarks.toLocaleString()}</span> bookmarks
+            {indexStats.articles > 0 && (
+              <>
+                {' '}· <span className="text-emerald-400 font-medium">{indexStats.fullArticles.toLocaleString()}</span> of{' '}
+                {indexStats.articles.toLocaleString()} X Articles readable in full
+              </>
+            )}
+            {previewArticles > 0 && (
+              <span className="block text-zinc-500 mt-0.5">
+                {previewArticles.toLocaleString()} {previewArticles === 1 ? 'article only has' : 'articles only have'} a preview.{' '}
+                <Link href="/" className="text-indigo-400 hover:text-indigo-300">Download them to the local archive</Link>
+                {' '}(logged in to X in{' '}
+                <Link href="/settings" className="text-indigo-400 hover:text-indigo-300">Settings</Link>) so search can read the whole text.
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Image analysis status — hidden while main pipeline is running (it handles vision internally) */}
       {imageStats !== null && !pipelineRunning && (
@@ -211,6 +292,12 @@ export default function AISearchPage() {
         </div>
       )}
 
+      {loading && (
+        <div className="flex items-center justify-center gap-2 py-12 text-sm text-zinc-500">
+          <Loader2 size={15} className="animate-spin text-indigo-400" /> Reading your bookmarks…
+        </div>
+      )}
+
       {/* Error state */}
       {error && (
         <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm mb-6">
@@ -218,32 +305,53 @@ export default function AISearchPage() {
         </div>
       )}
 
+      {notice && (
+        <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-500 text-sm mb-6">
+          <AlertCircle size={15} className="shrink-0 mt-0.5" /> {notice}
+        </div>
+      )}
+
+      {/* Answer to a question, citing the numbered results */}
+      {answer && (
+        <div className="px-5 py-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/20 mb-6">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-indigo-400 mb-2">
+            <MessageSquareText size={13} /> From your bookmarks
+          </div>
+          <p className="text-sm text-zinc-200 leading-relaxed whitespace-pre-line">
+            <AnswerText text={answer} />
+          </p>
+        </div>
+      )}
+
       {/* Empty state */}
       {searched && !loading && results.length === 0 && !error && (
         <div className="text-center py-16 text-zinc-600">
           <BookMarked size={36} className="mx-auto mb-3 opacity-30" />
-          <p>No bookmarks matched that description. Try different words.</p>
+          <p>{explanation || 'No bookmarks matched that description.'}</p>
+          <p className="text-xs mt-1">Try describing it differently.</p>
         </div>
       )}
 
       {/* Results */}
       {results.length > 0 && (
         <div>
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between gap-4 mb-4">
             <p className="text-sm text-zinc-400">{explanation}</p>
-            <span className="text-xs text-zinc-600">
+            <span className="text-xs text-zinc-600 shrink-0" title={considered ? `The AI read ${considered} likely bookmarks` : undefined}>
               {results.length} result{results.length !== 1 ? 's' : ''}
             </span>
           </div>
           <div className="flex flex-col gap-6">
             {results.map((b) => (
-              <div key={b.id}>
-                {b.aiReason && (
-                  <div className="flex items-start gap-1.5 mb-2 px-1">
-                    <Sparkles size={10} className="text-indigo-400 shrink-0 mt-0.5" />
-                    <span className="text-xs text-indigo-400/80 leading-relaxed">{b.aiReason}</span>
-                  </div>
-                )}
+              <div key={b.id} id={`result-${b.num}`} className="scroll-mt-6">
+                <div className="flex items-start gap-1.5 mb-2 px-1">
+                  <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-md bg-indigo-500/15 text-indigo-400 text-[11px] font-medium shrink-0">
+                    {b.num}
+                  </span>
+                  {b.aiReason && (
+                    <span className="text-xs text-indigo-400/80 leading-relaxed pt-0.5">{b.aiReason}</span>
+                  )}
+                </div>
                 {/* Cast to BookmarkWithMedia since BookmarkCard does not use the AI-specific fields */}
                 <BookmarkCard
                   bookmark={b as BookmarkWithMedia}
@@ -254,11 +362,6 @@ export default function AISearchPage() {
           </div>
         </div>
       )}
-
-      {/* Unused import guard — Search icon used as aria hint */}
-      <span className="sr-only">
-        <Search size={0} />
-      </span>
     </div>
   )
 }

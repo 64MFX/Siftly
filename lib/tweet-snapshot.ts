@@ -10,13 +10,15 @@
  *
  * Pure functions only — no network, no filesystem.
  */
-import type {
-  ArchivedArticle,
-  ArchivedLinkCard,
-  ArchivedMedia,
-  ArchivedPoll,
-  ArticleBlock,
-  TextSpan,
+import {
+  ARCHIVE_VERSION,
+  type ArchiveDocument,
+  type ArchivedArticle,
+  type ArchivedLinkCard,
+  type ArchivedMedia,
+  type ArchivedPoll,
+  type ArticleBlock,
+  type TextSpan,
 } from '@/lib/archive-types'
 
 export interface TweetSnapshot {
@@ -739,5 +741,36 @@ export function mergeSnapshots(primary: TweetSnapshot | null, fallback: TweetSna
     ...(primary.poll ?? fallback.poll ? { poll: primary.poll ?? fallback.poll } : {}),
     ...(article ? { article } : {}),
     ...(primary.unavailable || fallback.unavailable ? { unavailable: true } : {}),
+  }
+}
+
+/** The content of a saved archive.json, or null if it was written by another archive version */
+export function snapshotFromArchiveDoc(doc: ArchiveDocument | null): TweetSnapshot | null {
+  if (!doc || doc.version !== ARCHIVE_VERSION) return null
+  return {
+    tweetId: doc.tweetId,
+    authorName: doc.author.name,
+    authorHandle: doc.author.handle,
+    avatarUrl: doc.author.avatarUrl,
+    createdAt: doc.createdAt,
+    text: doc.text,
+    media: doc.media,
+    ...(doc.quote
+      ? {
+          quote: {
+            tweetId: doc.quote.tweetId,
+            authorName: doc.quote.author.name,
+            authorHandle: doc.quote.author.handle,
+            avatarUrl: doc.quote.author.avatarUrl,
+            createdAt: doc.quote.createdAt,
+            text: doc.quote.text,
+            media: doc.quote.media,
+            unavailable: doc.quote.unavailable,
+          },
+        }
+      : {}),
+    ...(doc.card ? { card: doc.card } : {}),
+    ...(doc.poll ? { poll: doc.poll } : {}),
+    ...(doc.article ? { article: doc.article } : {}),
   }
 }

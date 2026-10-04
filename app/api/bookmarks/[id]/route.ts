@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { deleteArchiveFolder, isBookmarkArchiving } from '@/lib/archiver'
 import { isArchiveRelocating } from '@/lib/archive-location'
-import { removeFromFts } from '@/lib/fts'
+import { removeFromSearchIndex } from '@/lib/search-index'
 
 /**
  * DELETE — remove one bookmark (by id or tweetId) from Siftly. It stays
@@ -46,7 +46,7 @@ export async function DELETE(
     )
   }
 
-  await removeFromFts(bookmark.id).catch((err) => console.error('FTS delete error:', err))
+  await removeFromSearchIndex(bookmark.id).catch((err) => console.error('Search index delete error:', err))
 
   let archiveDeleted = false
   let warning: string | undefined
