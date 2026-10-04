@@ -52,6 +52,9 @@ app/
       test/           # POST — validates API key or CLI auth
       proxy-models/   # GET — lists models from the local OpenAI-compatible proxy
     analyze/images/   # Vision analysis progress + trigger
+    archive/          # Local archive: GET stats/job, POST start, PUT autoArchive, DELETE stop
+      [id]/           # GET archived copy, POST archive one bookmark now
+      files/[...path] # Serves archived files (Range support for video)
     bookmarks/        # CRUD + filtering
     categories/       # Category management
     mindmap/          # Graph data
@@ -72,6 +75,12 @@ lib/
   rawjson-extractor.ts # Entity extraction from tweet JSON
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
+  archiver.ts         # Local archive orchestration, background job, auto-archive hook
+  tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
+  x-tweet-fetcher.ts  # Fresh tweet copies from X (GraphQL TweetResultByRestId → syndication)
+  archive-storage.ts  # Archive root, safe paths, media downloads
+  archive-render.ts   # Offline index.html + content.md renderers
+  archive-types.ts    # Archive document types (client-safe)
 
 prisma/schema.prisma  # SQLite schema (Bookmark, Category, MediaItem, Setting, ImportJob)
 ```
@@ -99,6 +108,9 @@ npx tsx cli/siftly.ts search "AI agents"             # FTS5 keyword search
 npx tsx cli/siftly.ts list --limit 5                 # Recent bookmarks
 npx tsx cli/siftly.ts list --source like --category ai-resources --sort oldest
 npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
+npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
+npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
+npx tsx cli/siftly.ts archive-status                 # Archive statistics
 npm run siftly -- stats                              # Alternative via npm script
 ```
 
@@ -111,9 +123,13 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Add known tool | Append domain to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` |
 | Test API auth | `POST /api/settings/test` with `{"provider":"anthropic"}` |
 | Check CLI auth | `GET /api/settings/cli-status` |
+| Archive bookmarks locally | `POST /api/archive` with `{"mode":"pending"}` (or `retry` / `all`); `GET /api/archive` for progress |
+| Archive one bookmark | `POST /api/archive/<id or tweetId>`; read it back with `GET /api/archive/<id>` |
 
 ## Database
 
 SQLite at `prisma/dev.db`. After schema changes: `npx prisma db push`
 
 Models: `Bookmark`, `MediaItem`, `BookmarkCategory`, `Category`, `Setting`, `ImportJob` — see `prisma/schema.prisma` for details.
+
+Local archive files live in `archive/` next to the database (`prisma/archive/` by default, override with `SIFTLY_ARCHIVE_DIR`). `MediaItem.localPath` / `localThumbnailPath` are relative to that folder.

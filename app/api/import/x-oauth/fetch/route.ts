@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { triggerAutoArchive } from '@/lib/archiver'
 
 interface XTweet {
   id: string
@@ -174,6 +175,8 @@ export async function POST(req: NextRequest) {
     nextToken = data.meta?.next_token
     if (!nextToken) break
   }
+
+  if (imported > 0) void triggerAutoArchive()
 
   return NextResponse.json({ imported, skipped, total })
 }

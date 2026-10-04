@@ -105,11 +105,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       source: bookmark.source,
       tweetCreatedAt: bookmark.tweetCreatedAt?.toISOString() ?? null,
       importedAt: bookmark.importedAt.toISOString(),
+      archivedAt: bookmark.archivedAt?.toISOString() ?? null,
+      archiveStatus: bookmark.archiveStatus,
       mediaItems: bookmark.mediaItems.map((m) => ({
         id: m.id,
         type: m.type,
         url: m.url,
         thumbnailUrl: m.thumbnailUrl,
+        localPath: m.localPath,
+        localThumbnailPath: m.localThumbnailPath,
       })),
       categories: bookmark.categories.map((bc) => ({
         id: bc.category.id,
