@@ -259,6 +259,16 @@ function BookmarksPageInner() {
     setFilters((prev) => ({ ...prev, [key]: value, page: 1 }))
   }
 
+  function handleDeleted(id: string) {
+    const remaining = bookmarks.filter((b) => b.id !== id)
+    setBookmarks(remaining)
+    setTotal((t) => Math.max(0, t - 1))
+    // Deleted the last one on this page: load the page that now holds the next results
+    if (remaining.length === 0) {
+      setFilters((prev) => ({ ...prev, page: Math.max(1, Math.min(prev.page, Math.ceil((total - 1) / pageSize))) }))
+    }
+  }
+
   function clearAllFilters() {
     setSearchInput('')
     setFilters(DEFAULT_FILTERS)
@@ -267,6 +277,7 @@ function BookmarksPageInner() {
   const mediaOptions = [
     { label: 'Photos', value: 'photo' },
     { label: 'Videos', value: 'video' },
+    { label: 'Articles', value: 'article' },
   ]
 
   const sourceOptions = [
@@ -465,7 +476,7 @@ function BookmarksPageInner() {
           <div className="masonry-grid">
             {bookmarks.map((bookmark) => (
               <div key={bookmark.id} className="masonry-item">
-                <BookmarkCard bookmark={bookmark} />
+                <BookmarkCard bookmark={bookmark} onDeleted={handleDeleted} />
               </div>
             ))}
           </div>
@@ -475,7 +486,7 @@ function BookmarksPageInner() {
         {!loading && bookmarks.length > 0 && viewMode === 'list' && (
           <div className="flex flex-col gap-3 max-w-3xl mx-auto">
             {bookmarks.map((bookmark) => (
-              <BookmarkCard key={bookmark.id} bookmark={bookmark} />
+              <BookmarkCard key={bookmark.id} bookmark={bookmark} onDeleted={handleDeleted} />
             ))}
           </div>
         )}
@@ -501,6 +512,7 @@ function BookmarksPageInner() {
         <BookmarkDetailModal
           bookmark={openBookmark}
           onClose={() => setOpenBookmark(null)}
+          onDeleted={handleDeleted}
         />
       )}
     </div>

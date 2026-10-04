@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { ARTICLE_WHERE } from '@/lib/bookmark-filters'
 
 const DEFAULT_PAGE = 1
 const DEFAULT_LIMIT = 24
@@ -68,6 +69,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     where.mediaItems = {
       some: { type: mediaType },
     }
+  } else if (mediaType === 'article') {
+    where.AND = [ARTICLE_WHERE]
   }
 
   try {

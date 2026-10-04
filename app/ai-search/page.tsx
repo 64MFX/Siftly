@@ -245,7 +245,10 @@ export default function AISearchPage() {
                   </div>
                 )}
                 {/* Cast to BookmarkWithMedia since BookmarkCard does not use the AI-specific fields */}
-                <BookmarkCard bookmark={b as BookmarkWithMedia} />
+                <BookmarkCard
+                  bookmark={b as BookmarkWithMedia}
+                  onDeleted={(id) => setResults((prev) => prev.filter((r) => r.id !== id))}
+                />
               </div>
             ))}
           </div>

@@ -68,6 +68,11 @@ body {
   flex-direction: column;
 }
 
+/* A deleted card renders nothing — don't leave a hole in the grid */
+.masonry-item:empty {
+  display: none;
+}
+
 /* ── Scrollbar styling ────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
