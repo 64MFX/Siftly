@@ -1,7 +1,8 @@
 import { createReadStream, promises as fs } from 'fs'
 import { Readable } from 'stream'
 import { NextRequest, NextResponse } from 'next/server'
-import { contentTypeForPath, getArchiveRoot, resolveArchivePath } from '@/lib/archive-storage'
+import { getArchiveRoot } from '@/lib/archive-location'
+import { contentTypeForPath, resolveArchivePath } from '@/lib/archive-storage'
 
 // Archived pages are static: no scripts, and nothing may load from outside the archive
 const HTML_CSP = "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
@@ -28,7 +29,7 @@ export async function GET(
   { params }: { params: Promise<{ path: string[] }> },
 ): Promise<Response> {
   const { path: segments } = await params
-  const filePath = resolveArchivePath(getArchiveRoot(), segments.join('/'))
+  const filePath = resolveArchivePath(await getArchiveRoot(), segments.join('/'))
   if (!filePath || filePath.endsWith('.part') || filePath.endsWith('.tmp')) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }

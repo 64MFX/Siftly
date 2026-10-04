@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { parseBookmarksJson } from '@/lib/parser'
-import { triggerAutoArchive } from '@/lib/archiver'
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   let formData: FormData
@@ -124,8 +123,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       processedCount: importedCount,
     },
   })
-
-  if (importedCount > 0) void triggerAutoArchive()
 
   return NextResponse.json({
     jobId: importJob.id,

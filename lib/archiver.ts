@@ -23,11 +23,11 @@ import {
 } from '@/lib/archive-types'
 import { decodeHtmlEntities, mergeSnapshots, parseStoredRaw, type TweetSnapshot } from '@/lib/tweet-snapshot'
 import { XTweetFetcher, type FetchLike, type RemoteTweet } from '@/lib/x-tweet-fetcher'
+import { getArchiveRoot, isArchiveRelocating } from '@/lib/archive-location'
 import {
   archiveFolderName,
   downloadToFile,
   fileKey,
-  getArchiveRoot,
   isAllowedMediaUrl,
   isHlsUrl,
   isVideoFileUrl,
@@ -500,6 +500,7 @@ export function archiveBookmark(
 ): Promise<ArchiveBookmarkResult> {
   const running = inFlight.get(bookmarkId)
   if (running) return running
+  if (isArchiveRelocating()) return Promise.reject(new Error('The archive folder is being moved — try again in a moment'))
   const run = runArchiveBookmark(bookmarkId, options).finally(() => inFlight.delete(bookmarkId))
   inFlight.set(bookmarkId, run)
   return run
@@ -518,7 +519,7 @@ async function runArchiveBookmark(
   try {
     const fetcher = options.fetcher === undefined ? await createXFetcher(options.fetchImpl) : options.fetcher
     const result = await buildArchive(bookmark, bookmark.mediaItems, {
-      root: options.root ?? getArchiveRoot(),
+      root: options.root ?? (await getArchiveRoot()),
       fetcher,
       fetchImpl: options.fetchImpl,
     })
@@ -572,15 +573,15 @@ async function runArchiveBookmark(
 }
 
 /** Read a bookmark's archive document from disk, or null if it was never archived */
-export async function readArchiveDocument(tweetId: string, root = getArchiveRoot()): Promise<{ folder: string; doc: ArchiveDocument } | null> {
+export async function readArchiveDocument(tweetId: string, root?: string): Promise<{ folder: string; doc: ArchiveDocument } | null> {
   const folder = archiveFolderName(tweetId)
-  const doc = await readJson<ArchiveDocument>(path.join(root, folder, 'archive.json'))
+  const doc = await readJson<ArchiveDocument>(path.join(root ?? (await getArchiveRoot()), folder, 'archive.json'))
   return doc ? { folder, doc } : null
 }
 
 // ── Background job ───────────────────────────────────────────────────────────
 
-/** pending = never attempted · retry = pending + partial + failed · all = everything */
+/** pending = nothing saved yet (never tried, or failed) · retry = pending + incomplete · all = everything */
 export type ArchiveMode = 'pending' | 'retry' | 'all'
 
 export interface ArchiveJobState {
@@ -600,8 +601,6 @@ export interface ArchiveJobState {
 interface ArchiveJob {
   state: ArchiveJobState
   abort: boolean
-  /** New bookmarks arrived while a job was running — pick them up afterwards */
-  rerun: boolean
 }
 
 const JOB_CONCURRENCY = 3
@@ -622,7 +621,6 @@ function job(): ArchiveJob {
       error: null,
     },
     abort: false,
-    rerun: false,
   }
   return store.siftlyArchiveJob
 }
@@ -635,20 +633,24 @@ export function stopArchiveJob(): boolean {
   const j = job()
   if (j.state.status !== 'running') return false
   j.abort = true
-  j.rerun = false
   j.state = { ...j.state, status: 'stopping' }
   return true
 }
 
 function whereForMode(mode: ArchiveMode) {
   if (mode === 'all') return {}
-  if (mode === 'retry') return { OR: [{ archiveStatus: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
-  return { archiveStatus: null }
+  if (mode === 'retry') return { OR: [{ archivedAt: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
+  return { archivedAt: null }
+}
+
+/** True while a background job or a single-bookmark archive is writing files */
+export function isArchiveBusy(): boolean {
+  return job().state.status !== 'idle' || inFlight.size > 0
 }
 
 export function startArchiveJob(options: { mode?: ArchiveMode; bookmarkIds?: string[] } = {}): boolean {
   const j = job()
-  if (j.state.status !== 'idle') return false
+  if (j.state.status !== 'idle' || isArchiveRelocating()) return false
   const mode = options.mode ?? 'pending'
   j.abort = false
   j.state = {
@@ -705,42 +707,17 @@ async function runJob(mode: ArchiveMode, bookmarkIds?: string[]): Promise<void> 
     console.error('[archive] Job failed:', err)
   } finally {
     j.state = { ...j.state, status: 'idle', current: null, finishedAt: new Date().toISOString() }
-    if (j.rerun && !j.abort) {
-      j.rerun = false
-      startArchiveJob({ mode: 'pending' })
-    }
-  }
-}
-
-export const AUTO_ARCHIVE_SETTING = 'autoArchive'
-
-export async function isAutoArchiveEnabled(): Promise<boolean> {
-  const setting = await prisma.setting.findUnique({ where: { key: AUTO_ARCHIVE_SETTING } })
-  return setting?.value === 'true'
-}
-
-/** Call after any import: archives new bookmarks in the background when enabled */
-export async function triggerAutoArchive(): Promise<void> {
-  try {
-    if (!(await isAutoArchiveEnabled())) return
-    const j = job()
-    if (j.state.status !== 'idle') {
-      j.rerun = true
-      return
-    }
-    startArchiveJob({ mode: 'pending' })
-  } catch (err) {
-    console.warn('[archive] Auto-archive could not start:', err instanceof Error ? err.message : err)
   }
 }
 
 export async function getArchiveStats() {
-  const [total, complete, partial, failed, pending] = await Promise.all([
+  const [total, archived, complete, partial, failed] = await Promise.all([
     prisma.bookmark.count(),
+    prisma.bookmark.count({ where: { archivedAt: { not: null } } }),
     prisma.bookmark.count({ where: { archiveStatus: 'complete' } }),
     prisma.bookmark.count({ where: { archiveStatus: 'partial' } }),
-    prisma.bookmark.count({ where: { archiveStatus: 'failed' } }),
-    prisma.bookmark.count({ where: { archiveStatus: null } }),
+    prisma.bookmark.count({ where: { archivedAt: null, archiveStatus: 'failed' } }),
   ])
-  return { total, archived: complete + partial, complete, partial, failed, pending }
+  // pending = nothing saved yet (includes failed attempts); failed is the subset that was tried
+  return { total, archived, complete, partial, failed, pending: total - archived }
 }

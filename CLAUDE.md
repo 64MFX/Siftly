@@ -52,8 +52,9 @@ app/
       test/           # POST — validates API key or CLI auth
       proxy-models/   # GET — lists models from the local OpenAI-compatible proxy
     analyze/images/   # Vision analysis progress + trigger
-    archive/          # Local archive: GET stats/job, POST start, PUT autoArchive, DELETE stop
+    archive/          # Local archive: GET stats/job/folder, POST start, PUT change folder, DELETE stop
       [id]/           # GET archived copy, POST archive one bookmark now
+      folders/        # GET folder picker listing + detected cloud-drive folders
       files/[...path] # Serves archived files (Range support for video)
     bookmarks/        # CRUD + filtering
     categories/       # Category management
@@ -75,7 +76,8 @@ lib/
   rawjson-extractor.ts # Entity extraction from tweet JSON
   parser.ts           # Multi-format bookmark JSON parser
   exporter.ts         # CSV / JSON / ZIP export
-  archiver.ts         # Local archive orchestration, background job, auto-archive hook
+  archiver.ts         # Local archive orchestration + background download job (never runs on import)
+  archive-location.ts # Archive folder (Setting `archiveDir` → SIFTLY_ARCHIVE_DIR → default), moving it
   tweet-snapshot.ts   # Normalizes GraphQL / v1.1 / syndication tweets + X Article content_state
   x-tweet-fetcher.ts  # Fresh tweet copies from X (GraphQL TweetResultByRestId → syndication)
   archive-storage.ts  # Archive root, safe paths, media downloads
@@ -111,6 +113,7 @@ npx tsx cli/siftly.ts show <id|tweetId>              # Full bookmark detail
 npx tsx cli/siftly.ts archive --limit 50             # Save bookmarks to the local archive
 npx tsx cli/siftly.ts archive --id <tweetId> --offline  # Rebuild one archive from stored data only
 npx tsx cli/siftly.ts archive-status                 # Archive statistics
+npx tsx cli/siftly.ts archive-dir "/path/to/Google Drive/Siftly"  # Change archive folder (moves files; --no-move, --reset)
 npm run siftly -- stats                              # Alternative via npm script
 ```
 
@@ -123,7 +126,8 @@ npm run siftly -- stats                              # Alternative via npm scrip
 | Add known tool | Append domain to `KNOWN_TOOL_DOMAINS` in `lib/rawjson-extractor.ts` |
 | Test API auth | `POST /api/settings/test` with `{"provider":"anthropic"}` |
 | Check CLI auth | `GET /api/settings/cli-status` |
-| Archive bookmarks locally | `POST /api/archive` with `{"mode":"pending"}` (or `retry` / `all`); `GET /api/archive` for progress |
+| Archive bookmarks locally | `POST /api/archive` with `{"mode":"pending"}` (or `retry` / `all`); `GET /api/archive` for progress. Imports never start it |
+| Change archive folder | `PUT /api/archive` with `{"archiveDir":"/abs/path","moveFiles":true}` (`null` = default) |
 | Archive one bookmark | `POST /api/archive/<id or tweetId>`; read it back with `GET /api/archive/<id>` |
 
 ## Database
@@ -132,4 +136,4 @@ SQLite at `prisma/dev.db`. After schema changes: `npx prisma db push`
 
 Models: `Bookmark`, `MediaItem`, `BookmarkCategory`, `Category`, `Setting`, `ImportJob` — see `prisma/schema.prisma` for details.
 
-Local archive files live in `archive/` next to the database (`prisma/archive/` by default, override with `SIFTLY_ARCHIVE_DIR`). `MediaItem.localPath` / `localThumbnailPath` are relative to that folder.
+Local archive files live in the folder chosen in Settings (Setting `archiveDir`), else `SIFTLY_ARCHIVE_DIR`, else `archive/` next to the database (`prisma/archive/`). Always resolve it with `getArchiveRoot()` from `lib/archive-location.ts`. `MediaItem.localPath` / `localThumbnailPath` are relative to that folder.

@@ -3,7 +3,8 @@ import prisma from '@/lib/db'
 import { ftsSearch } from '@/lib/fts'
 import { extractKeywords } from '@/lib/search-utils'
 import { archiveBookmark, createXFetcher, getArchiveStats, type ArchiveMode } from '@/lib/archiver'
-import { archiveFolderName, getArchiveRoot } from '@/lib/archive-storage'
+import { archiveFolderName } from '@/lib/archive-storage'
+import { getArchiveLocation, getArchiveRoot, setArchiveDir } from '@/lib/archive-location'
 import path from 'path'
 
 // ─── Output ──────────────────────────────────────────────────────────────────
@@ -158,6 +159,7 @@ async function cmdShow(args: string[]) {
 
   if (!bookmark) die(`Bookmark not found: ${id}`)
 
+  const archiveRoot = await getArchiveRoot()
   output({
     id: bookmark.id,
     tweetId: bookmark.tweetId,
@@ -170,7 +172,7 @@ async function cmdShow(args: string[]) {
     enrichedAt: bookmark.enrichedAt?.toISOString() ?? null,
     archivedAt: bookmark.archivedAt?.toISOString() ?? null,
     archiveStatus: bookmark.archiveStatus,
-    archiveDir: bookmark.archivedAt ? path.join(getArchiveRoot(), archiveFolderName(bookmark.tweetId)) : null,
+    archiveDir: bookmark.archivedAt ? path.join(archiveRoot, archiveFolderName(bookmark.tweetId)) : null,
     archiveWarnings: bookmark.archiveError ? bookmark.archiveError.split('\n') : [],
     semanticTags: safeParse(bookmark.semanticTags),
     entities: safeParse(bookmark.entities),
@@ -180,7 +182,7 @@ async function cmdShow(args: string[]) {
       type: m.type,
       url: m.url,
       thumbnailUrl: m.thumbnailUrl,
-      localPath: m.localPath ? path.join(getArchiveRoot(), m.localPath) : null,
+      localPath: m.localPath ? path.join(archiveRoot, m.localPath) : null,
       imageTags: safeParse(m.imageTags),
     })),
     categories: bookmark.categories.map((bc) => ({
@@ -237,7 +239,20 @@ async function cmdStats() {
 }
 
 async function cmdArchiveStatus() {
-  output({ archiveDir: getArchiveRoot(), ...(await getArchiveStats()) })
+  const location = await getArchiveLocation()
+  output({ archiveDir: location.dir, customArchiveDir: location.custom, ...(await getArchiveStats()) })
+}
+
+async function cmdArchiveDir(args: string[]) {
+  const { positional, flags } = parseArgs(args)
+  const input = positional.join(' ')
+  if (!input && flags.reset !== 'true') {
+    const location = await getArchiveLocation()
+    output({ archiveDir: location.dir, defaultArchiveDir: location.defaultDir, custom: location.custom })
+    return
+  }
+  const result = await setArchiveDir(flags.reset === 'true' ? null : input, { moveFiles: flags['no-move'] !== 'true' })
+  output({ archiveDir: result.dir, custom: result.custom, moved: result.moved ?? null, needDownloadAgain: result.missing })
 }
 
 async function cmdArchive(args: string[]) {
@@ -248,8 +263,8 @@ async function cmdArchive(args: string[]) {
   let where: object
   if (flags.id) where = { OR: [{ id: flags.id }, { tweetId: flags.id }] }
   else if (mode === 'all') where = {}
-  else if (mode === 'retry') where = { OR: [{ archiveStatus: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
-  else where = { archiveStatus: null }
+  else if (mode === 'retry') where = { OR: [{ archivedAt: null }, { archiveStatus: { in: ['partial', 'failed'] } }] }
+  else where = { archivedAt: null }
 
   const bookmarks = await prisma.bookmark.findMany({
     where,
@@ -269,7 +284,7 @@ async function cmdArchive(args: string[]) {
   }
 
   output({
-    archiveDir: getArchiveRoot(),
+    archiveDir: await getArchiveRoot(),
     processed: results.length,
     complete: results.filter((r) => r.status === 'complete').length,
     partial: results.filter((r) => r.status === 'partial').length,
@@ -320,6 +335,7 @@ const COMMANDS: Record<string, string> = {
   stats: 'stats                     Library statistics',
   archive: 'archive [--mode pending|retry|all] [--id <id|tweetId>] [--limit N] [--offline]   Save bookmarks locally',
   'archive-status': 'archive-status            Local archive statistics',
+  'archive-dir': 'archive-dir [<folder>] [--no-move] [--reset]   Show or change the archive folder (moves saved files unless --no-move)',
 }
 
 async function main() {
@@ -357,6 +373,9 @@ async function main() {
         break
       case 'archive-status':
         await cmdArchiveStatus()
+        break
+      case 'archive-dir':
+        await cmdArchiveDir(rest)
         break
       default:
         die(`Unknown command: ${command}. Run 'siftly --help' for usage.`)

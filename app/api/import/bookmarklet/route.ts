@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
-import { triggerAutoArchive } from '@/lib/archiver'
 
 const ALLOWED_ORIGINS = new Set(['https://x.com', 'https://twitter.com'])
 
@@ -173,8 +172,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     imported++
   }
-
-  if (imported > 0) void triggerAutoArchive()
 
   return NextResponse.json({ imported, skipped }, { headers: cors })
 }

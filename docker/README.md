@@ -114,7 +114,7 @@ siftly_data  →  /data/dev.db  (inside the container)
 
 The volume persists across `docker compose down` and restarts. Your bookmarks are safe.
 
-Locally archived tweets, articles and media (Settings → Local Archive) are saved to `/data/archive/` on the same volume.
+Locally archived tweets, articles and media (Settings → Local Archive) are saved to `/data/archive/` on the same volume. To keep them in a cloud-drive folder instead, mount it into the container (e.g. `- "$HOME/Google Drive/My Drive/Siftly Archive:/archive"` under `volumes:`) and choose `/archive` in Settings → Local Archive → Change, or set `SIFTLY_ARCHIVE_DIR=/archive`.
 
 **To back up the database:**
 

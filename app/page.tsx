@@ -4,13 +4,14 @@ import Link from 'next/link'
 import { BookmarkIcon, Tag, Image, Layers, Upload, Sparkles, Search, ArrowRight, TrendingUp, Bookmark } from 'lucide-react'
 import prisma from '@/lib/db'
 import BookmarkCard from '@/components/bookmark-card'
+import ArchiveDownloadButton from '@/components/archive-download-button'
 import type { BookmarkWithMedia } from '@/lib/types'
 
 const RECENT_QUERY = {
   take: 6,
   orderBy: [{ tweetCreatedAt: 'desc' as const }, { importedAt: 'desc' as const }],
   include: {
-    mediaItems: { select: { id: true, type: true, url: true, thumbnailUrl: true } },
+    mediaItems: { select: { id: true, type: true, url: true, thumbnailUrl: true, localPath: true, localThumbnailPath: true } },
     categories: {
       include: {
         category: { select: { id: true, name: true, slug: true, color: true } },
@@ -35,13 +36,14 @@ async function queryDashboard() {
     prisma.category.findMany(TOP_CATS_QUERY),
     prisma.bookmark.count({ where: { source: 'bookmark' } }),
     prisma.bookmark.count({ where: { source: 'like' } }),
+    prisma.bookmark.count({ where: { archivedAt: null } }),
   ])
 }
 
 type QueryResult = Awaited<ReturnType<typeof queryDashboard>>
 
 function buildDashboardData(result: QueryResult) {
-  const [totalBookmarks, totalCategories, totalMedia, uncategorizedCount, recentRaw, catsRaw, bookmarkSourceCount, likeSourceCount] = result
+  const [totalBookmarks, totalCategories, totalMedia, uncategorizedCount, recentRaw, catsRaw, bookmarkSourceCount, likeSourceCount, notDownloadedCount] = result
 
   const recentBookmarks: BookmarkWithMedia[] = recentRaw.map((b) => ({
     id: b.id,
@@ -51,6 +53,8 @@ function buildDashboardData(result: QueryResult) {
     authorName: b.authorName,
     tweetCreatedAt: b.tweetCreatedAt?.toISOString() ?? null,
     importedAt: b.importedAt.toISOString(),
+    archivedAt: b.archivedAt?.toISOString() ?? null,
+    archiveStatus: b.archiveStatus,
     mediaItems: b.mediaItems,
     categories: b.categories.map((bc) => ({
       id: bc.category.id,
@@ -68,6 +72,7 @@ function buildDashboardData(result: QueryResult) {
     totalCategories,
     totalMedia,
     uncategorizedCount,
+    notDownloadedCount,
     recentBookmarks,
     topCategories: catsRaw.map((c) => ({
       name: c.name,
@@ -85,6 +90,7 @@ const EMPTY_DASHBOARD = {
   totalCategories: 0,
   totalMedia: 0,
   uncategorizedCount: 0,
+  notDownloadedCount: 0,
   recentBookmarks: [] as BookmarkWithMedia[],
   topCategories: [] as { name: string; slug: string; color: string; count: number }[],
 }
@@ -196,6 +202,7 @@ export default async function DashboardPage() {
               <Sparkles size={15} />
               AI Categorize
             </Link>
+            <ArchiveDownloadButton initialPending={data.notDownloadedCount} />
             <Link
               href="/ai-search"
               className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-xl transition-colors"

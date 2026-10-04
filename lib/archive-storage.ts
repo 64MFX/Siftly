@@ -3,7 +3,8 @@
  * and streaming downloads of X media.
  */
 import { createHash } from 'crypto'
-import { createWriteStream, promises as fs } from 'fs'
+import { constants as fsConstants, createWriteStream, promises as fs } from 'fs'
+import os from 'os'
 import path from 'path'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
@@ -11,11 +12,12 @@ import type { ReadableStream as NodeReadableStream } from 'stream/web'
 import type { FetchLike } from '@/lib/x-tweet-fetcher'
 
 /**
- * Archive root: $SIFTLY_ARCHIVE_DIR, otherwise an `archive/` folder next to the
- * SQLite database (prisma/archive locally, /data/archive in Docker) so backups
- * of the data directory include it.
+ * Default archive root, used until a folder is picked in Settings:
+ * $SIFTLY_ARCHIVE_DIR, otherwise an `archive/` folder next to the SQLite
+ * database (prisma/archive locally, /data/archive in Docker) so backups of the
+ * data directory include it.
  */
-export function getArchiveRoot(): string {
+export function getDefaultArchiveRoot(): string {
   const override = process.env.SIFTLY_ARCHIVE_DIR?.trim()
   if (override) return path.resolve(override)
   return path.join(path.dirname(databaseFilePath()), 'archive')
@@ -29,6 +31,177 @@ function databaseFilePath(): string {
     if (file) return path.resolve(process.cwd(), file)
   }
   return path.join(process.cwd(), 'prisma', 'dev.db')
+}
+
+/**
+ * Turn user input into an absolute folder path: trims, strips surrounding
+ * quotes (pasted from Finder/Explorer) and expands `~`. Relative paths are
+ * rejected because they would depend on where the server was started.
+ */
+export function normalizeArchiveDir(input: string): string | null {
+  let value = input.trim()
+  if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1).trim()
+  if (!value || value.includes('\0')) return null
+  if (value === '~' || value.startsWith('~/') || value.startsWith('~\\')) value = path.join(os.homedir(), value.slice(1))
+  if (!path.isAbsolute(value)) return null
+  const resolved = path.resolve(value)
+  return resolved === path.parse(resolved).root ? null : resolved
+}
+
+/** True when `child` is `parent` or somewhere inside it */
+export function isSameOrInside(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child))
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+/** Create `dir` if needed and prove we can write to it */
+export async function ensureWritableDir(dir: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true })
+  const stat = await fs.stat(dir)
+  if (!stat.isDirectory()) throw new Error(`${dir} is not a folder`)
+  const probe = path.join(dir, `.siftly-write-test-${process.pid}-${Date.now()}`)
+  await fs.writeFile(probe, 'ok')
+  await fs.rm(probe, { force: true })
+}
+
+export interface MoveResult {
+  /** Files now in the destination */
+  moved: number
+  /** Files left behind because the destination already had a file with that name */
+  skipped: number
+}
+
+/**
+ * Move everything in `from` into `to`, merging with what is already there.
+ * Uses rename when possible and falls back to copy + delete across drives
+ * (cloud-drive folders are usually a separate volume). Existing files in the
+ * destination are never overwritten; the source copy is left in place instead.
+ */
+export async function moveArchiveContents(from: string, to: string): Promise<MoveResult> {
+  const result: MoveResult = { moved: 0, skipped: 0 }
+  await fs.mkdir(to, { recursive: true })
+  await mergeMove(from, to, result)
+  return result
+}
+
+async function mergeMove(from: string, to: string, result: MoveResult): Promise<void> {
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await fs.readdir(from, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    // Half-written downloads and temp files aren't worth carrying over
+    if (entry.name.endsWith('.part') || entry.name.endsWith('.tmp')) continue
+    const src = path.join(from, entry.name)
+    const dest = path.join(to, entry.name)
+    if (entry.isDirectory()) {
+      if (!(await pathExists(dest))) {
+        try {
+          await fs.rename(src, dest)
+          result.moved += await countFiles(dest)
+          continue
+        } catch { /* different drive — copy below */ }
+      }
+      await fs.mkdir(dest, { recursive: true })
+      await mergeMove(src, dest, result)
+      await fs.rmdir(src).catch(() => {}) // only succeeds once empty
+    } else if (entry.isFile()) {
+      if (await pathExists(dest)) {
+        result.skipped++
+        continue
+      }
+      try {
+        await fs.rename(src, dest)
+      } catch {
+        await fs.copyFile(src, dest, fsConstants.COPYFILE_EXCL)
+        await fs.rm(src, { force: true })
+      }
+      result.moved++
+    }
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  return fs.access(p).then(() => true, () => false)
+}
+
+async function countFiles(dir: string): Promise<number> {
+  let total = 0
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (entry.isDirectory()) total += await countFiles(path.join(dir, entry.name))
+    else if (entry.isFile()) total++
+  }
+  return total
+}
+
+export interface FolderSuggestion {
+  label: string
+  /** The cloud folder itself */
+  path: string
+}
+
+/** Synced cloud-drive folders found on this machine (Google Drive, iCloud, Dropbox, OneDrive…) */
+export async function detectCloudFolders(home = os.homedir()): Promise<FolderSuggestion[]> {
+  const candidates: FolderSuggestion[] = []
+  const add = (label: string, p: string) => candidates.push({ label, path: p })
+
+  // macOS File Provider locations: ~/Library/CloudStorage/GoogleDrive-<account>/My Drive, Dropbox, OneDrive-<org>…
+  const cloudStorage = path.join(home, 'Library', 'CloudStorage')
+  for (const name of await fs.readdir(cloudStorage).catch(() => [] as string[])) {
+    const dir = path.join(cloudStorage, name)
+    if (name.startsWith('GoogleDrive')) {
+      const account = name.slice('GoogleDrive'.length).replace(/^-/, '')
+      add(account ? `Google Drive (${account})` : 'Google Drive', (await isDir(path.join(dir, 'My Drive'))) ? path.join(dir, 'My Drive') : dir)
+    } else if (name.startsWith('OneDrive')) add(name.replace(/^OneDrive-?/, 'OneDrive ').trim(), dir)
+    else if (name.startsWith('Dropbox')) add('Dropbox', dir)
+    else if (name.startsWith('Box')) add('Box', dir)
+    else if (!name.startsWith('.')) add(name, dir)
+  }
+  add('iCloud Drive', path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs'))
+  add('iCloud Drive', path.join(home, 'iCloudDrive'))
+  add('Google Drive', path.join(home, 'Google Drive', 'My Drive'))
+  add('Google Drive', path.join(home, 'Google Drive'))
+  add('Google Drive', path.join(home, 'My Drive'))
+  add('Google Drive', '/Volumes/GoogleDrive/My Drive')
+  add('Dropbox', path.join(home, 'Dropbox'))
+  add('OneDrive', path.join(home, 'OneDrive'))
+  add('Nextcloud', path.join(home, 'Nextcloud'))
+  add('pCloud', path.join(home, 'pCloud Drive'))
+  add('MEGA', path.join(home, 'MEGA'))
+  add('Sync', path.join(home, 'Sync'))
+  if (process.platform === 'win32') {
+    // Google Drive for desktop mounts as its own drive letter (usually G:)
+    for (const letter of 'DEFGHIJKLMNOPQRSTUVWXYZ') add('Google Drive', `${letter}:\\My Drive`)
+  }
+
+  const found: FolderSuggestion[] = []
+  const seen = new Set<string>()
+  for (const c of candidates) {
+    const resolved = path.resolve(c.path)
+    // `~/Google Drive` only counts when it doesn't contain a `My Drive` we already listed
+    if (seen.has(resolved) || [...seen].some((s) => isSameOrInside(resolved, s))) continue
+    if (await isDir(resolved)) {
+      seen.add(resolved)
+      found.push({ label: c.label, path: resolved })
+    }
+  }
+  return found
+}
+
+async function isDir(p: string): Promise<boolean> {
+  return fs.stat(p).then((s) => s.isDirectory(), () => false)
+}
+
+/** Sub-folders of `dir` for the folder picker (hidden folders left out) */
+export async function listSubfolders(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+  return entries
+    .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && !e.name.startsWith('.') && !e.name.startsWith('$'))
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }))
 }
 
 /** Folder name for a tweet — tweet IDs are numeric, anything else is sanitized */

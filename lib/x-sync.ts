@@ -1,6 +1,5 @@
 import prisma from '@/lib/db'
 import { fetchPage, parsePage, importTweets } from '@/lib/twitter-api'
-import { triggerAutoArchive } from '@/lib/archiver'
 
 // ── Sync ────────────────────────────────────────────────────────────────────────
 
@@ -41,8 +40,6 @@ export async function syncBookmarks(
         console.warn(`[x-sync] Hit max page limit (${MAX_PAGES}), stopping pagination`)
       }
     }
-
-    if (imported > 0) void triggerAutoArchive()
 
     // Only update last sync timestamp if we actually fetched tweets
     if (imported > 0 || skipped > 0) {

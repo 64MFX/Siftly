@@ -28,7 +28,10 @@ import {
   RefreshCw,
   Server,
   HardDrive,
+  HardDriveDownload,
   Square,
+  Cloud,
+  CornerLeftUp,
 } from 'lucide-react'
 
 type AIProvider = 'anthropic' | 'openai' | 'minimax' | 'proxy'
@@ -1251,10 +1254,22 @@ interface ArchiveStatusResponse {
     current: string | null
     error: string | null
   }
-  autoArchive: boolean
   archiveDir: string
+  defaultArchiveDir: string
+  customArchiveDir: boolean
+  inDocker: boolean
   diskUsageBytes: number | null
   xAccess: 'session' | 'guest'
+}
+
+interface FolderListing {
+  path: string
+  parent: string | null
+  home: string
+  separator: string
+  folders: string[]
+  error: string | null
+  suggestions: { label: string; path: string }[]
 }
 
 function formatBytes(bytes: number): string {
@@ -1269,10 +1284,212 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
+const ARCHIVE_SUBFOLDER = 'Siftly Archive'
+
+function ArchiveFolderEditor({
+  status,
+  onDone,
+  onCancel,
+  onToast,
+}: {
+  status: ArchiveStatusResponse
+  onDone: () => void
+  onCancel: () => void
+  onToast: (t: Toast) => void
+}) {
+  const [value, setValue] = useState(status.archiveDir)
+  const [moveFiles, setMoveFiles] = useState(true)
+  const [listing, setListing] = useState<FolderListing | null>(null)
+  const [browsing, setBrowsing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const browse = useCallback(async (dir?: string) => {
+    try {
+      const res = await fetch(`/api/archive/folders${dir ? `?path=${encodeURIComponent(dir)}` : ''}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Could not open that folder')
+      setListing(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open that folder')
+    }
+  }, [])
+
+  // Load the cloud-folder suggestions up front
+  useEffect(() => { void browse() }, [browse])
+
+  const join = (dir: string, name: string) => `${dir.replace(/[\\/]+$/, '')}${listing?.separator ?? '/'}${name}`
+
+  async function save(archiveDir: string | null) {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/archive', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archiveDir, moveFiles }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed to change the folder')
+      const parts = ['Archive folder changed.']
+      if (data.moved?.moved) parts.push(`Moved ${data.moved.moved.toLocaleString()} file${data.moved.moved === 1 ? '' : 's'}.`)
+      if (data.moved?.skipped) parts.push(`${data.moved.skipped.toLocaleString()} file${data.moved.skipped === 1 ? ' was' : 's were'} already there and left in the old folder.`)
+      if (data.missing) parts.push(`${data.missing.toLocaleString()} bookmark${data.missing === 1 ? ' needs' : 's need'} downloading again — use Download on the dashboard.`)
+      onToast({ type: 'success', message: parts.join(' ') })
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to change the folder')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const unchanged = value.trim() === status.archiveDir
+
+  return (
+    <div className="rounded-xl border border-zinc-700/60 bg-zinc-800/30 p-3 space-y-3">
+      {listing && listing.suggestions.length > 0 && (
+        <div>
+          <p className="text-xs text-zinc-500 mb-1.5">Cloud folders on this computer</p>
+          <div className="flex flex-wrap gap-1.5">
+            {listing.suggestions.map((s) => (
+              <button
+                key={s.path}
+                onClick={() => { setValue(join(s.path, ARCHIVE_SUBFOLDER)); setError(null) }}
+                title={join(s.path, ARCHIVE_SUBFOLDER)}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-indigo-500/60 hover:text-zinc-100 transition-colors"
+              >
+                <Cloud size={12} className="text-sky-400" />
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <label htmlFor="archive-dir" className="text-xs text-zinc-500">Folder</label>
+        <div className="mt-1 flex gap-2">
+          <input
+            id="archive-dir"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setError(null) }}
+            placeholder={listing ? join(join(listing.home, 'Google Drive'), ARCHIVE_SUBFOLDER) : ''}
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-indigo-500 focus:outline-none"
+          />
+          <button
+            onClick={() => {
+              const next = !browsing
+              setBrowsing(next)
+              if (next) void browse(value.trim() || undefined)
+            }}
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+              browsing ? 'bg-indigo-600 text-white' : 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600'
+            }`}
+          >
+            <FolderOpen size={13} /> Browse
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] text-zinc-500">
+          Pick a dedicated folder — one sub-folder is created inside it for each bookmark. It is created if it doesn&apos;t exist.
+        </p>
+      </div>
+
+      {browsing && listing && (
+        <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/70">
+          <div className="flex items-center gap-2 border-b border-zinc-800 px-2 py-1.5">
+            <button
+              onClick={() => listing.parent && void browse(listing.parent)}
+              disabled={!listing.parent}
+              title="Up one folder"
+              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
+            >
+              <CornerLeftUp size={14} />
+            </button>
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-400" title={listing.path}>{listing.path}</span>
+            <button
+              onClick={() => { setValue(listing.path); setError(null) }}
+              className="shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-500"
+            >
+              Select
+            </button>
+          </div>
+          <div className="max-h-56 overflow-y-auto py-1">
+            {listing.error ? (
+              <p className="px-3 py-2 text-xs text-zinc-500">{listing.error}</p>
+            ) : listing.folders.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-zinc-500">No sub-folders</p>
+            ) : (
+              listing.folders.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => void browse(join(listing.path, name))}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-300 hover:bg-zinc-800"
+                >
+                  <Folder size={13} className="shrink-0 text-zinc-500" />
+                  <span className="truncate">{name}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {status.stats.archived > 0 && (
+        <label className="flex items-start gap-2 text-xs text-zinc-300 cursor-pointer">
+          <input type="checkbox" checked={moveFiles} onChange={(e) => setMoveFiles(e.target.checked)} className="mt-0.5 accent-indigo-500" />
+          <span>
+            Move my {status.stats.archived.toLocaleString()} downloaded bookmark{status.stats.archived === 1 ? '' : 's'} to the new folder
+            {!moveFiles && (
+              <span className="block text-zinc-500">
+                The old folder is left as it is. Bookmarks that aren&apos;t already in the new folder go back to &ldquo;not downloaded&rdquo;.
+              </span>
+            )}
+          </span>
+        </label>
+      )}
+
+      {status.inDocker && (
+        <p className="flex items-start gap-2 text-[11px] text-amber-400">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          Siftly is running in Docker: this path is inside the container. Mount your cloud folder as a volume and enter its container path, or set SIFTLY_ARCHIVE_DIR.
+        </p>
+      )}
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void save(value.trim())}
+          disabled={saving || !value.trim() || unchanged}
+          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+          {saving ? (moveFiles && status.stats.archived > 0 ? 'Moving files…' : 'Saving…') : 'Save folder'}
+        </button>
+        <button onClick={onCancel} disabled={saving} className="rounded-lg px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50">
+          Cancel
+        </button>
+        {status.customArchiveDir && (
+          <button
+            onClick={() => void save(null)}
+            disabled={saving}
+            title={status.defaultArchiveDir}
+            className="ml-auto rounded-lg px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
+          >
+            Back to default folder
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
   const [status, setStatus] = useState<ArchiveStatusResponse | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [savingToggle, setSavingToggle] = useState(false)
+  const [editingFolder, setEditingFolder] = useState(false)
   const [starting, setStarting] = useState(false)
 
   const load = useCallback(async (withUsage = false) => {
@@ -1301,25 +1518,6 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
     }
   }, [running, load])
 
-  async function handleToggle() {
-    if (!status) return
-    setSavingToggle(true)
-    try {
-      const res = await fetch('/api/archive', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autoArchive: !status.autoArchive }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Failed to save')
-      setStatus({ ...status, autoArchive: data.autoArchive })
-    } catch (err) {
-      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save setting' })
-    } finally {
-      setSavingToggle(false)
-    }
-  }
-
   async function handleStart(mode: 'pending' | 'retry' | 'all') {
     setStarting(true)
     try {
@@ -1332,7 +1530,7 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
       if (!res.ok) throw new Error(data.error ?? 'Failed to start')
       await load()
     } catch (err) {
-      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to start archiving' })
+      onToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to start downloading' })
     } finally {
       setStarting(false)
     }
@@ -1345,14 +1543,13 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
 
   const stats = status?.stats
   const job = status?.job
-  const retryCount = (stats?.partial ?? 0) + (stats?.failed ?? 0)
   const pct = job && job.total > 0 ? Math.round((job.done / job.total) * 100) : 0
 
   return (
     <Section
       icon={HardDrive}
       title="Local Archive"
-      description="Save each bookmark's full text, images, videos and X Articles (with images in place) to disk, so they stay readable even if the original is deleted from X."
+      description="Download each bookmark's full text, images, videos and X Articles (with images in place) to a folder on your computer, so they stay readable even if the original is deleted from X. Nothing is downloaded automatically — use Download on the dashboard or the buttons below."
     >
       {!status ? (
         loadError
@@ -1363,23 +1560,53 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
           <div className="grid grid-cols-3 gap-2">
             <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
               <p className="text-lg font-semibold text-zinc-100 tabular-nums">{stats!.archived.toLocaleString()}<span className="text-xs text-zinc-500 font-normal"> / {stats!.total.toLocaleString()}</span></p>
-              <p className="text-xs text-zinc-500">Saved locally</p>
+              <p className="text-xs text-zinc-500">Downloaded</p>
             </div>
             <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
               <p className="text-lg font-semibold text-zinc-100 tabular-nums">{stats!.pending.toLocaleString()}</p>
-              <p className="text-xs text-zinc-500">Not saved yet</p>
+              <p className="text-xs text-zinc-500">
+                Not downloaded yet{stats!.failed > 0 && <span className="text-red-400"> · {stats!.failed.toLocaleString()} failed</span>}
+              </p>
             </div>
             <div className="rounded-xl bg-zinc-800/60 border border-zinc-700/50 px-3 py-2.5">
-              <p className={`text-lg font-semibold tabular-nums ${retryCount > 0 ? 'text-amber-400' : 'text-zinc-100'}`}>{retryCount.toLocaleString()}</p>
-              <p className="text-xs text-zinc-500">Incomplete / failed</p>
+              <p className={`text-lg font-semibold tabular-nums ${stats!.partial > 0 ? 'text-amber-400' : 'text-zinc-100'}`}>{stats!.partial.toLocaleString()}</p>
+              <p className="text-xs text-zinc-500">Incomplete</p>
             </div>
           </div>
 
-          <p className="text-xs text-zinc-500">
-            Stored in <code className="font-mono text-zinc-400 break-all">{status.archiveDir}</code>
-            {status.diskUsageBytes !== null && <> · {formatBytes(status.diskUsageBytes)} used</>}
-            . Each bookmark gets its own folder with an <code className="font-mono">index.html</code> you can open without Siftly.
-          </p>
+          {editingFolder ? (
+            <ArchiveFolderEditor
+              status={status}
+              onToast={onToast}
+              onCancel={() => setEditingFolder(false)}
+              onDone={() => { setEditingFolder(false); void load(true) }}
+            />
+          ) : (
+            <div className="flex items-start gap-3 rounded-xl border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5">
+              <Folder size={15} className="mt-0.5 shrink-0 text-zinc-500" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-zinc-500">
+                  Archive folder
+                  <span className={`ml-1.5 rounded px-1.5 py-px text-[10px] font-medium ${status.customArchiveDir ? 'bg-indigo-500/15 text-indigo-300' : 'bg-zinc-700/60 text-zinc-400'}`}>
+                    {status.customArchiveDir ? 'Custom' : 'Default'}
+                  </span>
+                </p>
+                <code className="block font-mono text-xs text-zinc-300 break-all">{status.archiveDir}</code>
+                <p className="mt-0.5 text-[11px] text-zinc-500">
+                  {status.diskUsageBytes !== null && <>{formatBytes(status.diskUsageBytes)} used · </>}
+                  Each bookmark gets its own folder with an <code className="font-mono">index.html</code> you can open without Siftly.
+                </p>
+              </div>
+              <button
+                onClick={() => setEditingFolder(true)}
+                disabled={running}
+                title={running ? 'Wait for the download to finish first' : 'Choose another folder, e.g. inside Google Drive'}
+                className="shrink-0 rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Change
+              </button>
+            </div>
+          )}
 
           <div className={`flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs ${
             status.xAccess === 'session' ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400' : 'border-zinc-700/50 bg-zinc-800/40 text-zinc-400'
@@ -1390,26 +1617,12 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
               : 'Using guest access to X. Long-form X Articles may only save their preview — save your X session (auth_token + ct0) in Import → Live sync to archive them in full.'}
           </div>
 
-          <button
-            onClick={() => void handleToggle()}
-            disabled={savingToggle}
-            className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5 text-left transition-colors hover:border-zinc-600 disabled:opacity-60"
-          >
-            <span>
-              <span className="block text-sm font-medium text-zinc-200">Save new bookmarks automatically</span>
-              <span className="block text-xs text-zinc-500">Archive right after every import and scheduled sync</span>
-            </span>
-            <span className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${status.autoArchive ? 'bg-indigo-600' : 'bg-zinc-700'}`}>
-              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${status.autoArchive ? 'left-[18px]' : 'left-0.5'}`} />
-            </span>
-          </button>
-
           {running && job ? (
             <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-2">
               <div className="flex items-center justify-between gap-3 text-sm">
                 <span className="flex items-center gap-2 text-zinc-200">
                   <Loader2 size={14} className="animate-spin text-indigo-400" />
-                  {job.status === 'stopping' ? 'Stopping…' : `Saving ${job.done.toLocaleString()} of ${job.total.toLocaleString()}`}
+                  {job.status === 'stopping' ? 'Stopping…' : `Downloading ${job.done.toLocaleString()} of ${job.total.toLocaleString()}`}
                   {job.current && job.status === 'running' && <span className="text-xs text-zinc-500 truncate">{job.current}</span>}
                 </span>
                 <button
@@ -1431,26 +1644,26 @@ function LocalArchiveSection({ onToast }: { onToast: (t: Toast) => void }) {
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => void handleStart('pending')}
-                disabled={starting || stats!.pending === 0}
+                disabled={starting || editingFolder || stats!.pending === 0}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <HardDrive size={14} />
-                {stats!.pending > 0 ? `Save ${stats!.pending.toLocaleString()} bookmark${stats!.pending === 1 ? '' : 's'}` : 'Everything is saved'}
+                <HardDriveDownload size={14} />
+                {stats!.pending > 0 ? `Download ${stats!.pending.toLocaleString()} bookmark${stats!.pending === 1 ? '' : 's'}` : 'Everything is downloaded'}
               </button>
-              {retryCount > 0 && (
+              {stats!.partial > 0 && (
                 <button
                   onClick={() => void handleStart('retry')}
-                  disabled={starting}
+                  disabled={starting || editingFolder}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-sm font-medium text-zinc-200 disabled:opacity-50 transition-colors"
                 >
                   <RefreshCw size={14} />
-                  Retry {retryCount.toLocaleString()} incomplete
+                  Retry {stats!.partial.toLocaleString()} incomplete
                 </button>
               )}
               {stats!.archived > 0 && (
                 <button
                   onClick={() => void handleStart('all')}
-                  disabled={starting}
+                  disabled={starting || editingFolder}
                   className="px-3 py-2.5 rounded-xl text-sm text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
                   title="Fetch every bookmark again and fill in anything missing. Existing files are kept."
                 >
