@@ -41,6 +41,7 @@ model Category {
   color       String   @default("#6366f1")
   description String?
   isAiGenerated Boolean @default(false)
+  userEdited  Boolean  @default(false) // name/description/color changed by the user — default seeding leaves it alone
   createdAt   DateTime @default(now())
   bookmarks   BookmarkCategory[]
 }

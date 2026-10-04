@@ -118,6 +118,104 @@ export async function GET(request: NextRequest, context: RouteContext): Promise<
   }
 }
 
+const MAX_NAME_LENGTH = 80
+const MAX_DESCRIPTION_LENGTH = 1000
+
+/**
+ * Edit a category's name, description and/or color. The slug stays the same so
+ * links, filters and existing AI assignments keep working after a rename.
+ */
+export async function PATCH(request: NextRequest, context: RouteContext): Promise<NextResponse> {
+  const { slug } = await context.params
+
+  let body: { name?: unknown; description?: unknown; color?: unknown } = {}
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+  }
+
+  const data: { name?: string; description?: string | null; color?: string } = {}
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || body.name.trim() === '') {
+      return NextResponse.json({ error: 'Category name cannot be empty' }, { status: 400 })
+    }
+    const name = body.name.trim()
+    if (name.length > MAX_NAME_LENGTH) {
+      return NextResponse.json({ error: `Category name must be ${MAX_NAME_LENGTH} characters or fewer` }, { status: 400 })
+    }
+    data.name = name
+  }
+
+  if (body.description !== undefined) {
+    if (body.description !== null && typeof body.description !== 'string') {
+      return NextResponse.json({ error: 'Description must be a string or null' }, { status: 400 })
+    }
+    const description = body.description?.trim() ?? ''
+    if (description.length > MAX_DESCRIPTION_LENGTH) {
+      return NextResponse.json(
+        { error: `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer` },
+        { status: 400 }
+      )
+    }
+    data.description = description || null
+  }
+
+  if (body.color !== undefined) {
+    if (typeof body.color !== 'string' || !/^#[0-9a-fA-F]{3,8}$/.test(body.color)) {
+      return NextResponse.json({ error: 'Color must be a hex value like #6366f1' }, { status: 400 })
+    }
+    data.color = body.color
+  }
+
+  if (Object.keys(data).length === 0) {
+    return NextResponse.json({ error: 'Nothing to update: send name, description or color' }, { status: 400 })
+  }
+
+  try {
+    const category = await prisma.category.findUnique({ where: { slug }, select: { id: true } })
+    if (!category) {
+      return NextResponse.json({ error: `Category not found: ${slug}` }, { status: 404 })
+    }
+
+    if (data.name !== undefined) {
+      const clash = await prisma.category.findFirst({
+        where: { name: data.name, NOT: { id: category.id } },
+        select: { id: true },
+      })
+      if (clash) {
+        return NextResponse.json({ error: 'Another category already has that name' }, { status: 409 })
+      }
+    }
+
+    const updated = await prisma.category.update({
+      where: { slug },
+      data: { ...data, userEdited: true },
+      include: { _count: { select: { bookmarks: true } } },
+    })
+
+    return NextResponse.json({
+      category: {
+        id: updated.id,
+        name: updated.name,
+        slug: updated.slug,
+        color: updated.color,
+        description: updated.description,
+        isAiGenerated: updated.isAiGenerated,
+        createdAt: updated.createdAt.toISOString(),
+        bookmarkCount: updated._count.bookmarks,
+      },
+    })
+  } catch (err) {
+    console.error(`Category [${slug}] update error:`, err)
+    return NextResponse.json(
+      { error: `Failed to update category: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    )
+  }
+}
+
 export async function DELETE(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   const { slug } = await context.params
 

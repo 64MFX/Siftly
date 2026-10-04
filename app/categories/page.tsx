@@ -1,22 +1,12 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Tag, X, ArrowRight, Folder, Bookmark, Sparkles, Loader2, Check, Trash2 } from 'lucide-react'
+import { Plus, Tag, X, ArrowRight, Folder, Bookmark, Sparkles, Loader2, Check, Trash2, Pencil } from 'lucide-react'
 import * as Dialog from '@radix-ui/react-dialog'
 import Link from 'next/link'
 import type { Category } from '@/lib/types'
 import DeleteCategoryDialog from '@/components/delete-category-dialog'
-
-const PRESET_COLORS = [
-  '#6366f1', // indigo
-  '#10b981', // emerald
-  '#f59e0b', // amber
-  '#ef4444', // red
-  '#8b5cf6', // violet
-  '#06b6d4', // cyan
-  '#f97316', // orange
-  '#ec4899', // pink
-]
+import EditCategoryDialog, { PRESET_COLORS } from '@/components/edit-category-dialog'
 
 interface AddCategoryModalProps {
   open: boolean
@@ -401,10 +391,11 @@ function AIAssistantModal({ open, onClose, onCategoriesCreated }: AIAssistantMod
 
 interface CategoryDisplayCardProps {
   category: Category
+  onEdit: (category: Category) => void
   onDelete: (category: Category) => void
 }
 
-function CategoryDisplayCard({ category, onDelete }: CategoryDisplayCardProps) {
+function CategoryDisplayCard({ category, onEdit, onDelete }: CategoryDisplayCardProps) {
   return (
     <div
       className="bg-zinc-900 border border-zinc-800 rounded-2xl hover:border-zinc-700 transition-all duration-200 overflow-hidden group"
@@ -420,14 +411,24 @@ function CategoryDisplayCard({ category, onDelete }: CategoryDisplayCardProps) {
               </span>
             )}
           </div>
-          <button
-            onClick={() => onDelete(category)}
-            title={`Delete ${category.name}`}
-            aria-label={`Delete ${category.name}`}
-            className="shrink-0 p-1.5 -m-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
-          >
-            <Trash2 size={15} />
-          </button>
+          <div className="shrink-0 flex items-center gap-1 -m-1.5">
+            <button
+              onClick={() => onEdit(category)}
+              title={`Edit ${category.name}`}
+              aria-label={`Edit ${category.name}`}
+              className="p-1.5 rounded-lg text-zinc-600 hover:text-indigo-400 hover:bg-indigo-500/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+            >
+              <Pencil size={15} />
+            </button>
+            <button
+              onClick={() => onDelete(category)}
+              title={`Delete ${category.name}`}
+              aria-label={`Delete ${category.name}`}
+              className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
         </div>
 
         {category.description ? (
@@ -477,6 +478,7 @@ export default function CategoriesPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [aiModalOpen, setAiModalOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null)
+  const [editTarget, setEditTarget] = useState<Category | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -493,6 +495,12 @@ export default function CategoriesPage() {
 
   function handleAdd(category: Category) {
     setCategories((prev) => [...prev, category])
+  }
+
+  function handleUpdated(updated: Category) {
+    setCategories((prev) =>
+      prev.map((c) => (c.id === updated.id ? updated : c)).sort((a, b) => a.name.localeCompare(b.name)),
+    )
   }
 
   function handleDeleted(slug: string) {
@@ -577,7 +585,7 @@ export default function CategoriesPage() {
       {!loading && categories.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {categories.map((cat) => (
-            <CategoryDisplayCard key={cat.id} category={cat} onDelete={setDeleteTarget} />
+            <CategoryDisplayCard key={cat.id} category={cat} onEdit={setEditTarget} onDelete={setDeleteTarget} />
           ))}
         </div>
       )}
@@ -607,6 +615,15 @@ export default function CategoriesPage() {
         onClose={() => setAiModalOpen(false)}
         onCategoriesCreated={handleCategoriesCreated}
       />
+
+      {editTarget && (
+        <EditCategoryDialog
+          category={editTarget}
+          open
+          onClose={() => setEditTarget(null)}
+          onSaved={handleUpdated}
+        />
+      )}
 
       {deleteTarget && (
         <DeleteCategoryDialog
