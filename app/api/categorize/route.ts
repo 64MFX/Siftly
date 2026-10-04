@@ -17,6 +17,8 @@ import {
 } from '@/lib/vision-analyzer'
 import { backfillEntities } from '@/lib/rawjson-extractor'
 import { refreshSearchRows } from '@/lib/search-index'
+import { parseLinkCard } from '@/lib/link-card'
+import { resolveLinkCard } from '@/lib/link-card-store'
 
 type Stage = 'vision' | 'entities' | 'enrichment' | 'categorize' | 'parallel'
 
@@ -263,6 +265,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 text: true,
                 semanticTags: true,
                 entities: true,
+                linkCard: true,
                 mediaItems: {
                   where: { type: { in: ['photo', 'gif', 'video'] } },
                   select: { id: true, url: true, thumbnailUrl: true, type: true, imageTags: true },
@@ -270,6 +273,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               },
             })
             if (!bm) return
+
+            // Link card: what a link post points at (saved, so categorization below reads it too)
+            const savedLink = parseLinkCard(bm.linkCard)
+            const link =
+              savedLink ??
+              (await resolveLinkCard(bm.id).catch((err) => {
+                console.warn('[parallel] link card lookup failed for', bm.id, err instanceof Error ? err.message : err)
+                return null
+              }))?.card ??
+              undefined
+            // Existing tags were made without knowing what the post links to
+            const linkIsNew = !savedLink && !!link
 
             // Vision: analyze any untagged media items (SDK or CLI)
             let anyVisionRan = false
@@ -291,7 +306,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             }
 
             // Enrichment: generate semantic tags if not already done
-            if (!bm.semanticTags) {
+            if (!bm.semanticTags || linkIsNew) {
               // Re-fetch image tags from DB after vision (or use initial fetch if no vision ran)
               const imageTags = anyVisionRan
                 ? (
@@ -306,7 +321,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                     .map((m) => m.imageTags)
                     .filter((t): t is string => t !== null && t !== '' && t !== '{}')
 
-              if (imageTags.length === 0 && bm.text.length < 20) {
+              if (imageTags.length === 0 && !link && bm.text.length < 20) {
                 // Trivial bookmark — skip enrichment
                 await prisma.bookmark.update({ where: { id: bm.id }, data: { semanticTags: '[]' } })
               } else {
@@ -318,7 +333,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 }
                 try {
                   const results = await enrichBatchSemanticTags(
-                    [{ id: bm.id, text: bm.text, imageTags, entities }],
+                    [{ id: bm.id, text: bm.text, imageTags, entities, link }],
                     client,
                   )
                   const result = results[0]

@@ -33,6 +33,7 @@ import {
   syncSearchIndex,
 } from '@/lib/search-index'
 import type { BookmarkWithMedia } from '@/lib/types'
+import { parseLinkCard } from '@/lib/link-card'
 
 // ── Understanding the request ────────────────────────────────────────────────
 
@@ -712,6 +713,7 @@ const HYDRATE_SELECT = {
   semanticTags: true,
   archivedAt: true,
   archiveStatus: true,
+  linkCard: true,
   mediaItems: {
     select: { id: true, type: true, url: true, thumbnailUrl: true, imageTags: true, localPath: true, localThumbnailPath: true },
   },
@@ -738,6 +740,7 @@ function toResult(b: HydrateRow, aiScore: number, aiReason: string): AISearchBoo
     importedAt: b.importedAt.toISOString(),
     archivedAt: b.archivedAt?.toISOString() ?? null,
     archiveStatus: b.archiveStatus,
+    linkCard: parseLinkCard(b.linkCard),
     mediaItems: b.mediaItems.map((m) => ({
       id: m.id,
       type: m.type,

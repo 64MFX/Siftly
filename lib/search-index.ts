@@ -20,6 +20,7 @@ import type { ArchiveDocument } from '@/lib/archive-types'
 import { archiveFolderName } from '@/lib/archive-storage'
 import { getArchiveRoot } from '@/lib/archive-location'
 import { mergeSnapshots, snapshotFromArchiveDoc, snapshotFromStoredRaw } from '@/lib/tweet-snapshot'
+import { parseLinkCard } from '@/lib/link-card'
 import {
   SEARCH_DOC_VERSION,
   buildSearchDocument,
@@ -97,6 +98,7 @@ interface IndexSource {
   authorName: string
   rawJson: string
   archivedAt: Date | null
+  linkCard: string | null
   mediaItems: { type: string }[]
 }
 
@@ -133,6 +135,7 @@ export async function extractSearchDocument(bookmark: IndexSource, archiveRoot: 
     authorHandle: bookmark.authorHandle,
     authorName: bookmark.authorName,
     mediaTypes: bookmark.mediaItems.map((m) => m.type),
+    linkCard: parseLinkCard(bookmark.linkCard),
   })
 }
 
@@ -196,6 +199,7 @@ async function indexBatch(ids: string[], archiveRoot: string | null): Promise<nu
       authorName: true,
       rawJson: true,
       archivedAt: true,
+      linkCard: true,
       mediaItems: { select: { type: true, imageTags: true } },
     },
   })

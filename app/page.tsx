@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import Link from 'next/link'
 import { BookmarkIcon, Tag, Image, Layers, Upload, Sparkles, Search, ArrowRight, TrendingUp, Bookmark } from 'lucide-react'
 import prisma from '@/lib/db'
+import { parseLinkCard } from '@/lib/link-card'
 import BookmarkCard from '@/components/bookmark-card'
 import ArchiveDownloadButton from '@/components/archive-download-button'
 import type { BookmarkWithMedia } from '@/lib/types'
@@ -55,6 +56,7 @@ function buildDashboardData(result: QueryResult) {
     importedAt: b.importedAt.toISOString(),
     archivedAt: b.archivedAt?.toISOString() ?? null,
     archiveStatus: b.archiveStatus,
+    linkCard: parseLinkCard(b.linkCard),
     mediaItems: b.mediaItems,
     categories: b.categories.map((bc) => ({
       id: bc.category.id,

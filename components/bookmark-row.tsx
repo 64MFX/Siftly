@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Image, Play } from 'lucide-react'
+import { Globe, Image, Play } from 'lucide-react'
 import type { BookmarkWithMedia } from '@/lib/types'
 import { archiveFileUrl } from '@/lib/archive-types'
 
@@ -165,9 +165,14 @@ export default function BookmarkRow({ bookmark, onClick }: BookmarkRowProps) {
         )}
       </div>
 
-      {/* Tweet text snippet — flex-1 */}
+      {/* Tweet text snippet — flex-1; a bare link shows the title of the page it links to */}
       <p className="flex-1 min-w-0 text-xs text-zinc-300 truncate">
-        {cleanText || <span className="text-zinc-600 italic">No text</span>}
+        {cleanText || (bookmark.linkCard ? (
+          <span className="text-zinc-400">
+            <Globe size={10} className="inline -mt-0.5 mr-1 text-zinc-600" />
+            {bookmark.linkCard.title}
+          </span>
+        ) : <span className="text-zinc-600 italic">No text</span>)}
       </p>
 
       {/* Category dots */}

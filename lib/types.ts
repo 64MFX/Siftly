@@ -9,6 +9,22 @@ export interface MediaItem {
   localThumbnailPath?: string | null
 }
 
+/**
+ * Preview of the page a post links to — X's own link card, or the page's Open
+ * Graph tags. Shown on bookmark cards and read by the AI categorizer.
+ */
+export interface LinkCard {
+  url: string
+  title: string
+  description?: string
+  /** Site name or domain, e.g. "github.com" */
+  domain?: string
+  /** Remote preview image */
+  imageUrl?: string
+  /** Archived copy of the image, relative to the archive root — serve via archiveFileUrl() */
+  imagePath?: string
+}
+
 export interface BookmarkCategory {
   id: string
   name: string
@@ -27,6 +43,8 @@ export interface BookmarkWithMedia {
   importedAt?: string
   archivedAt?: string | null
   archiveStatus?: string | null
+  /** What the post links to, once known (see lib/link-card.ts) */
+  linkCard?: LinkCard | null
   mediaItems: MediaItem[]
   categories: BookmarkCategory[]
 }
