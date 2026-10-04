@@ -1,30 +1,114 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { mkdtemp, readFile, readdir, rm } from 'fs/promises'
-import { tmpdir } from 'os'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'fs/promises'
+import { homedir, tmpdir } from 'os'
 import path from 'path'
 import {
   archiveFolderName,
+  detectCloudFolders,
   downloadToFile,
-  getArchiveRoot,
+  getDefaultArchiveRoot,
+  isSameOrInside,
   mediaIdentity,
+  moveArchiveContents,
+  normalizeArchiveDir,
   originalImageUrl,
   resolveArchivePath,
 } from '@/lib/archive-storage'
 
-describe('getArchiveRoot', () => {
+describe('getDefaultArchiveRoot', () => {
   afterEach(() => vi.unstubAllEnvs())
 
   it('lives next to the SQLite database', () => {
     vi.stubEnv('SIFTLY_ARCHIVE_DIR', '')
     vi.stubEnv('DATABASE_URL', 'file:/data/siftly.db')
-    expect(getArchiveRoot()).toBe(path.resolve('/data/archive'))
+    expect(getDefaultArchiveRoot()).toBe(path.resolve('/data/archive'))
     vi.stubEnv('DATABASE_URL', 'file:./prisma/dev.db')
-    expect(getArchiveRoot()).toBe(path.resolve(process.cwd(), 'prisma/archive'))
+    expect(getDefaultArchiveRoot()).toBe(path.resolve(process.cwd(), 'prisma/archive'))
   })
 
   it('honours SIFTLY_ARCHIVE_DIR', () => {
     vi.stubEnv('SIFTLY_ARCHIVE_DIR', '/mnt/backup/x')
-    expect(getArchiveRoot()).toBe(path.resolve('/mnt/backup/x'))
+    expect(getDefaultArchiveRoot()).toBe(path.resolve('/mnt/backup/x'))
+  })
+})
+
+describe('normalizeArchiveDir', () => {
+  it('accepts absolute paths, strips quotes and expands ~', () => {
+    expect(normalizeArchiveDir('  /Users/me/Google Drive/My Drive/Siftly  ')).toBe(path.resolve('/Users/me/Google Drive/My Drive/Siftly'))
+    expect(normalizeArchiveDir('"/Users/me/Dropbox/Siftly"')).toBe(path.resolve('/Users/me/Dropbox/Siftly'))
+    expect(normalizeArchiveDir('~/Dropbox/Siftly')).toBe(path.join(homedir(), 'Dropbox/Siftly'))
+    expect(normalizeArchiveDir('/a/b/../c')).toBe(path.resolve('/a/c'))
+  })
+
+  it('rejects relative paths, the filesystem root and junk', () => {
+    for (const bad of ['', '   ', 'archive', './archive', '/', 'a\0b']) {
+      expect(normalizeArchiveDir(bad)).toBeNull()
+    }
+  })
+})
+
+describe('isSameOrInside', () => {
+  it('detects nesting without matching sibling prefixes', () => {
+    expect(isSameOrInside('/a/b', '/a/b')).toBe(true)
+    expect(isSameOrInside('/a/b', '/a/b/c')).toBe(true)
+    expect(isSameOrInside('/a/b', '/a/bc')).toBe(false)
+    expect(isSameOrInside('/a/b/c', '/a/b')).toBe(false)
+  })
+})
+
+describe('moveArchiveContents', () => {
+  let tmp: string
+  beforeEach(async () => { tmp = await mkdtemp(path.join(tmpdir(), 'siftly-move-')) })
+  afterEach(async () => { await rm(tmp, { recursive: true, force: true }) })
+
+  it('moves every tweet folder and merges with what is already there', async () => {
+    const from = path.join(tmp, 'old')
+    const to = path.join(tmp, 'cloud', 'Siftly')
+    await mkdir(path.join(from, '111', 'media'), { recursive: true })
+    await writeFile(path.join(from, '111', 'archive.json'), 'old-111')
+    await writeFile(path.join(from, '111', 'media', 'photo-a.jpg'), 'A')
+    await mkdir(path.join(from, '222'), { recursive: true })
+    await writeFile(path.join(from, '222', 'archive.json'), 'old-222')
+    await writeFile(path.join(from, '222', 'media.part'), 'half')
+    // The destination already has its own copy of 222
+    await mkdir(path.join(to, '222'), { recursive: true })
+    await writeFile(path.join(to, '222', 'archive.json'), 'new-222')
+
+    const result = await moveArchiveContents(from, to)
+
+    expect(result).toEqual({ moved: 2, skipped: 1 })
+    expect(await readFile(path.join(to, '111', 'media', 'photo-a.jpg'), 'utf8')).toBe('A')
+    expect(await readFile(path.join(to, '222', 'archive.json'), 'utf8')).toBe('new-222') // never overwritten
+    expect(await readdir(from)).toEqual(['222']) // only the conflicting file stays behind
+    expect(await readdir(path.join(from, '222'))).toEqual(['archive.json', 'media.part'])
+  })
+
+  it('is a no-op when the old folder does not exist', async () => {
+    expect(await moveArchiveContents(path.join(tmp, 'missing'), path.join(tmp, 'dest'))).toEqual({ moved: 0, skipped: 0 })
+  })
+})
+
+describe('detectCloudFolders', () => {
+  let home: string
+  beforeEach(async () => { home = await mkdtemp(path.join(tmpdir(), 'siftly-home-')) })
+  afterEach(async () => { await rm(home, { recursive: true, force: true }) })
+
+  it('finds Google Drive, iCloud and Dropbox folders that exist', async () => {
+    await mkdir(path.join(home, 'Library/CloudStorage/GoogleDrive-me@example.com/My Drive'), { recursive: true })
+    await mkdir(path.join(home, 'Library/Mobile Documents/com~apple~CloudDocs'), { recursive: true })
+    await mkdir(path.join(home, 'Dropbox'))
+    await mkdir(path.join(home, 'Google Drive/My Drive'), { recursive: true })
+
+    const found = await detectCloudFolders(home)
+    expect(found).toEqual(expect.arrayContaining([
+      { label: 'Google Drive (me@example.com)', path: path.join(home, 'Library/CloudStorage/GoogleDrive-me@example.com/My Drive') },
+      { label: 'iCloud Drive', path: path.join(home, 'Library/Mobile Documents/com~apple~CloudDocs') },
+      { label: 'Dropbox', path: path.join(home, 'Dropbox') },
+      { label: 'Google Drive', path: path.join(home, 'Google Drive/My Drive') },
+    ]))
+    // ~/Google Drive itself isn't offered separately from its My Drive folder
+    expect(found.map((f) => f.path)).not.toContain(path.join(home, 'Google Drive'))
+    expect(found.map((f) => f.path)).not.toContain(path.join(home, 'OneDrive'))
   })
 })
 

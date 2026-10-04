@@ -211,7 +211,7 @@ Tweets get deleted, accounts get suspended, articles get pulled. The local archi
 - **X Articles** — the full body with headings, lists, quotes, code, links, and every inline image, video and embedded post **in its original position**
 - **Quoted posts**, link-preview cards, polls and author avatars
 
-Hover a card and click the drive icon to save it, or go to **Settings → Local Archive** to save everything at once and turn on **Save new bookmarks automatically** (runs after every import and scheduled sync). Saved bookmarks show a green **Saved** chip — click it to read the archived copy inside Siftly. Cards play saved videos inline instead of linking out to X.
+Nothing is downloaded automatically — importing never touches the archive. Click **Download N bookmarks** on the dashboard to save every bookmark that isn't downloaded yet, or hover a card and click the drive icon to save just that one. **Settings → Local Archive** shows progress, retries incomplete downloads and lets you pick the folder. Saved bookmarks show a green **Saved** chip — click it to read the archived copy inside Siftly. Cards play saved videos inline instead of linking out to X.
 
 Each bookmark gets its own folder you can open without Siftly:
 
@@ -224,11 +224,11 @@ Each bookmark gets its own folder you can open without Siftly:
   media/        # photos, videos, GIFs, posters, avatars
 ```
 
-The archive lives next to your database (`prisma/archive/` locally, `/data/archive/` in Docker) — set `SIFTLY_ARCHIVE_DIR` to store it elsewhere. Re-archiving never deletes anything: if a post has since been removed from X, Siftly keeps the files and text it already saved.
+By default the archive lives next to your database (`prisma/archive/` locally, `/data/archive/` in Docker). To keep it in **Google Drive, iCloud Drive, Dropbox, OneDrive** or any other folder, open **Settings → Local Archive → Change**: Siftly lists the cloud folders it finds on your computer, has a folder browser, and can move the files you've already downloaded. If you choose not to move them, bookmarks whose copy isn't in the new folder go back to *not downloaded* so the dashboard button fetches them again. (`SIFTLY_ARCHIVE_DIR` sets the default folder; a folder chosen in Settings takes precedence.) Re-archiving never deletes anything: if a post has since been removed from X, Siftly keeps the files and text it already saved.
 
 > **X Articles in full:** X only returns article bodies to logged-in sessions reliably. If you've saved your `auth_token` + `ct0` for **Import → Live sync**, the archiver uses them; otherwise it uses guest access and may only capture the article preview (it's marked *incomplete* so you can retry later).
 
-From the CLI: `npx tsx cli/siftly.ts archive` (`--mode retry|all`, `--id <tweetId>`, `--limit N`) and `npx tsx cli/siftly.ts archive-status`.
+From the CLI: `npx tsx cli/siftly.ts archive` (`--mode retry|all`, `--id <tweetId>`, `--limit N`), `npx tsx cli/siftly.ts archive-status`, and `npx tsx cli/siftly.ts archive-dir "<folder>"` (`--no-move`, `--reset`) to change the folder.
 
 ### ⚙️ Categories
 
@@ -274,8 +274,7 @@ All settings are manageable in the **Settings** page at `/settings` or via envir
 | Local Proxy URL | `AI_PROXY_BASE_URL` | OpenAI-compatible proxy such as [CLIProxyAPI / EasyCLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (default: `http://127.0.0.1:8317/v1`). Models are fetched from the proxy in Settings |
 | Local Proxy Key | `AI_PROXY_API_KEY` | One of the `api-keys` configured in the proxy |
 | Database | `DATABASE_URL` | SQLite file path (default: `file:./prisma/dev.db`) |
-| Local archive folder | `SIFTLY_ARCHIVE_DIR` | Where archived tweets/media are saved (default: `archive/` next to the database) |
-| Auto-archive | Settings page only | Save new bookmarks locally after every import and sync |
+| Local archive folder | Settings page or `SIFTLY_ARCHIVE_DIR` | Where archived tweets/media are saved (default: `archive/` next to the database). A folder picked in Settings wins over the env var |
 
 ### Custom API Endpoint
 
