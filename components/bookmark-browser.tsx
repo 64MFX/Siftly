@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Search,
   BookmarkX,
   BookOpen,
+  FolderOpen,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -22,7 +23,8 @@ import * as Select from '@radix-ui/react-select'
 import BookmarkCard from '@/components/bookmark-card'
 import BookmarkRow from '@/components/bookmark-row'
 import BookmarkDetailModal from '@/components/bookmark-detail-modal'
-import type { BookmarkWithMedia, BookmarksResponse } from '@/lib/types'
+import { ReadLaterTabs, type ReadLaterTab } from '@/components/read-later-folders'
+import type { BookmarkWithMedia, BookmarksResponse, ReadLaterState } from '@/lib/types'
 
 const DEFAULT_PAGE_SIZE = 24
 const COMPACT_PAGE_SIZE = 100
@@ -35,6 +37,8 @@ interface Filters {
   sort: string
   page: number
   uncategorized: boolean
+  /** Read Later tab: '' = All, 'none' = Unsorted, otherwise a folder id */
+  folder: ReadLaterTab
 }
 
 const DEFAULT_FILTERS: Filters = {
@@ -45,11 +49,15 @@ const DEFAULT_FILTERS: Filters = {
   sort: 'newest',
   page: 1,
   uncategorized: false,
+  folder: '',
 }
 
 function buildUrl(filters: Filters, limit: number, readLater: boolean): string {
   const params = new URLSearchParams()
-  if (readLater) params.set('readLater', 'true')
+  if (readLater) {
+    params.set('readLater', 'true')
+    if (filters.folder) params.set('readLaterFolder', filters.folder)
+  }
   if (filters.q) params.set('q', filters.q)
   if (filters.uncategorized) {
     params.set('uncategorized', 'true')
@@ -213,12 +221,14 @@ interface BookmarkBrowserProps {
 /** Browse page: search, filters, views and pagination over all bookmarks or the Read Later list */
 export default function BookmarkBrowser({ readLater = false }: BookmarkBrowserProps) {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const [filters, setFilters] = useState<Filters>(() => ({
     ...DEFAULT_FILTERS,
     uncategorized: searchParams.get('uncategorized') === 'true',
     category: searchParams.get('category') ?? '',
     mediaType: searchParams.get('mediaType') ?? '',
     q: searchParams.get('q') ?? '',
+    folder: readLater ? searchParams.get('folder') ?? '' : '',
   }))
   const [searchInput, setSearchInput] = useState('')
   const [bookmarks, setBookmarks] = useState<BookmarkWithMedia[]>([])
@@ -268,8 +278,14 @@ export default function BookmarkBrowser({ readLater = false }: BookmarkBrowserPr
     setFilters((prev) => ({ ...prev, [key]: value, page: 1 }))
   }
 
-  // Functional updates: cards report back after a request, possibly several at once
+  // Cards report back after a request — possibly several at once, or after the tab changed
+  const latest = useRef({ filters, bookmarks })
+  useEffect(() => {
+    latest.current = { filters, bookmarks }
+  })
+
   function removeFromList(id: string) {
+    if (!latest.current.bookmarks.some((b) => b.id === id)) return
     setBookmarks((prev) => prev.filter((b) => b.id !== id))
     setTotal((t) => Math.max(0, t - 1))
   }
@@ -280,21 +296,30 @@ export default function BookmarkBrowser({ readLater = false }: BookmarkBrowserPr
     setFilters((prev) => ({ ...prev, page: Math.max(1, Math.min(prev.page, Math.ceil(total / pageSize))) }))
   }, [loading, bookmarks.length, total, pageSize])
 
-  function handleReadLaterChange(id: string, readLaterAt: string | null) {
-    if (!readLater) {
-      setBookmarks((prev) => prev.map((b) => (b.id === id ? { ...b, readLaterAt } : b)))
-    } else if (readLaterAt === null) {
-      // Taken off the list: it no longer belongs on this page
-      removeFromList(id)
-    } else {
-      // Put back from the still-open detail view: reload the page
-      setFilters((prev) => ({ ...prev }))
-    }
+  function handleReadLaterChange(id: string, { readLaterAt, readLaterFolderId }: ReadLaterState) {
+    const update = () => setBookmarks((prev) => prev.map((b) => (b.id === id ? { ...b, readLaterAt, readLaterFolderId } : b)))
+    if (!readLater) return update()
+
+    // Still on the list, and in the open tab's folder?
+    const { folder } = latest.current.filters
+    const belongs = readLaterAt !== null &&
+      (folder === '' || (folder === 'none' ? readLaterFolderId === null : readLaterFolderId === folder))
+    const listed = latest.current.bookmarks.some((b) => b.id === id)
+    if (belongs && listed) update()
+    else if (listed) removeFromList(id)
+    // Put back from the still-open detail view: reload the page
+    else if (belongs) setFilters((prev) => ({ ...prev }))
   }
+
+  const selectFolder = useCallback((folder: ReadLaterTab) => {
+    setFilters((prev) => (prev.folder === folder ? prev : { ...prev, folder, page: 1 }))
+    router.replace(folder ? `/read-later?folder=${encodeURIComponent(folder)}` : '/read-later', { scroll: false })
+  }, [router])
 
   function clearAllFilters() {
     setSearchInput('')
-    setFilters(DEFAULT_FILTERS)
+    // The Read Later tab isn't a filter: stay on it
+    setFilters((prev) => ({ ...DEFAULT_FILTERS, folder: prev.folder }))
   }
 
   const mediaOptions = [
@@ -462,10 +487,13 @@ export default function BookmarkBrowser({ readLater = false }: BookmarkBrowserPr
               Read Later
             </h1>
             <p className="text-sm text-zinc-500 mt-1">
-              Bookmarks you set aside to read. Click the book icon on a bookmark to add it here or take it off the list.
+              Bookmarks you set aside to read. Click the book icon on a bookmark to add it here or take it off the list,
+              and sort them into your own folders with its folder button.
             </p>
           </div>
         )}
+
+        {readLater && <ReadLaterTabs selected={filters.folder} onSelect={selectFolder} />}
 
         {/* Results count */}
         {!loading && !readLaterEmpty && (
@@ -491,23 +519,31 @@ export default function BookmarkBrowser({ readLater = false }: BookmarkBrowserPr
           </div>
         )}
 
-        {/* Empty Read Later list */}
+        {/* Empty Read Later list, Unsorted or folder */}
         {readLaterEmpty && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
             <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-5">
-              <BookOpen size={26} className="text-zinc-700" />
+              {filters.folder ? <FolderOpen size={26} className="text-zinc-700" /> : <BookOpen size={26} className="text-zinc-700" />}
             </div>
-            <h3 className="text-base font-semibold text-zinc-400 mb-2">Nothing to read later yet</h3>
+            <h3 className="text-base font-semibold text-zinc-400 mb-2">
+              {filters.folder === '' ? 'Nothing to read later yet' : filters.folder === 'none' ? 'Everything is in a folder' : 'This folder is empty'}
+            </h3>
             <p className="text-zinc-600 text-sm mb-6 max-w-sm">
-              Hover over any bookmark and click the book icon in its top-right corner to save it here.
+              {filters.folder === ''
+                ? 'Hover over any bookmark and click the book icon in its top-right corner to save it here.'
+                : filters.folder === 'none'
+                  ? 'Bookmarks you add to Read Later show up here until you move them to a folder.'
+                  : 'Hover over a bookmark under All or Unsorted and click its folder button to move it here.'}
             </p>
-            <Link
-              href="/bookmarks"
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-xl transition-colors border border-zinc-800"
-            >
-              <Search size={13} />
-              Browse bookmarks
-            </Link>
+            {filters.folder === '' && (
+              <Link
+                href="/bookmarks"
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-xl transition-colors border border-zinc-800"
+              >
+                <Search size={13} />
+                Browse bookmarks
+              </Link>
+            )}
           </div>
         )}
 

@@ -215,6 +215,7 @@ Interactive force-directed graph showing all bookmarks organized by category:
 - Hover a card and click the **book icon** in its top-right corner to set it aside; the icon fills in (and stays visible) while it's on the list
 - Click it again to take it off — Read Later is separate from categories
 - **Read Later** in the sidebar lists them, most recently added first, with the same search, filters and views as Browse
+- **Your own folders** — tabs on the Read Later page (All · Unsorted · your folders · *New folder*). Hover a card and click **folder** (or its folder chip) to move it; rename or delete the open folder from its tab. Deleting a folder keeps its bookmarks, under Unsorted. Folders are just for you — the AI never touches them
 
 ### 💾 Local Archive
 
@@ -318,7 +319,8 @@ siftly/
 │   │   ├── analyze/images/   # Batch image vision analysis (GET progress, POST run)
 │   │   ├── bookmarks/        # List, filter, paginate, delete
 │   │   │   ├── [id]/categories/ # Per-bookmark category management
-│   │   │   └── [id]/read-later/ # Add to (POST) / remove from (DELETE) Read Later
+│   │   │   └── [id]/read-later/ # Add to (POST) / file in a folder (PUT) / remove from (DELETE) Read Later
+│   │   ├── read-later/folders/ # Read Later folders: list, create, rename, delete
 │   │   ├── categories/       # Category CRUD
 │   │   │   └── [slug]/       # Individual category operations
 │   │   ├── categorize/       # 4-stage AI pipeline (start, status, stop)
@@ -386,6 +388,7 @@ Bookmark          — tweet text, author, date, raw JSON, semantic tags, enrichm
   └── BookmarkCategory — category assignments with confidence scores (0–1)
 
 Category          — name, slug, hex color, AI-readable description
+ReadLaterFolder   — the user's own Read Later folders (a bookmark is in at most one)
 Setting           — key-value store (API keys, model preferences)
 ImportJob         — tracks import file status and progress
 ```
