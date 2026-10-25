@@ -63,6 +63,8 @@ cd Siftly
 
 `start.sh` installs dependencies, sets up the database, checks for Claude CLI auth, and opens [http://localhost:28417](http://localhost:28417) automatically.
 
+On macOS, you can also double-click **Start Siftly.command** in Finder. Keep its Terminal window open while using Siftly. Press **Ctrl+C** to stop the app; the window keeps the output visible until you press Return.
+
 ### Option B — Using Claude Code
 
 If you're using [Claude Code](https://claude.ai/code) to set up the project, it will read `CLAUDE.md` and know exactly how to get started. Just open the project folder:
